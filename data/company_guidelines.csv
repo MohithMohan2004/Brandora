@@ -1,0 +1,9 @@
+guideline_id,category,rule,applies_to,severity
+BRAND-001,brand_voice,"Use clear, confident, modern language. Avoid exaggerated hype and excessive exclamation marks.",all,mandatory
+BRAND-002,claims,"Only state product facts that are explicitly present in the product catalogue. Do not invent certifications or performance claims.",all,mandatory
+BRAND-003,environmental_claims,"Do not describe a product as sustainable, eco-friendly, carbon-neutral, or ethically sourced unless the catalogue explicitly substantiates that exact claim.",all,mandatory
+BRAND-004,pricing,"If mentioning a price, reproduce the catalogue price exactly and use INR currency notation.",all,mandatory
+BRAND-005,discounts,"Never invent discounts, coupon codes, limited-time offers, or free-shipping claims. Only mention a promotion if it is present in an approved promotions source.",all,mandatory
+BRAND-006,design,"For image advertisements, prefer clean layouts, strong hierarchy, generous whitespace, and legible typography.",image,mandatory
+BRAND-007,cta,"Include one clear call to action. Do not imply a purchase link exists unless the user provides one.",all,mandatory
+BRAND-008,sms,"For SMS copy, keep the message concise and avoid unsupported urgency or scarcity claims.",sms,mandatory
