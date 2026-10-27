@@ -11,6 +11,10 @@ import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from streamlit_mic_recorder import speech_to_text
 from dotenv import load_dotenv
+<<<<<<< HEAD
+=======
+from poster import poster_editor_ui
+>>>>>>> f0affd8 (update 1)
 
 load_dotenv()
 
@@ -306,6 +310,22 @@ def compose_advertisement(image_bytes, ad_text):
 
     return Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
 
+<<<<<<< HEAD
+=======
+def ad_defaults(ad_text):
+    """Pull headline / copy / CTA out of the generated brief for the editor."""
+    clean = lambda v: re.sub(r"[*_`#]", "", v).strip()
+    rest = ["VISUAL DIRECTION", "WHY THIS FITS THE BRAND",
+            "MISSING INFORMATION / ASSUMPTIONS", "SOURCE IDS USED"]
+    return {
+        "headline": clean(extract_section(ad_text, "HEADLINE", ["AD COPY", "CALL TO ACTION"] + rest))
+                    or "Made for Your Everyday",
+        "copy": clean(extract_section(ad_text, "AD COPY", ["CALL TO ACTION"] + rest))
+                or "Discover something made for you.",
+        "cta": clean(extract_section(ad_text, "CALL TO ACTION", rest)) or "DISCOVER MORE",
+    }
+
+>>>>>>> f0affd8 (update 1)
 def row_to_text(row, kind):
     parts = [f"record_type: {kind}"]
     for key, value in row.items():
@@ -614,6 +634,7 @@ if st.session_state.ad_output:
                 st.session_state.composed_ad = compose_advertisement(
                     image_bytes, st.session_state.ad_output
                 )
+                
         except requests.exceptions.Timeout:
             st.error("Image generation timed out. Please try again.")
         except requests.exceptions.RequestException as exc:
@@ -645,6 +666,16 @@ if st.session_state.ad_output:
             st.warning(
                 "The visual was generated, but the final ad could not be composed. "
                 "Generate the image again or check the error above."
+        st.subheader("Edit and approve the poster")
+        st.caption(
+                "Review the copy, adjust fonts, colours and positions, then approve. "
+                "The raw image stays hidden because image models can draw pseudo-text."
+            )
+        poster_editor_ui(
+                st.session_state.generated_image,
+                ad_defaults(st.session_state.ad_output),
+                brief=st.session_state.ad_prompt,
+                ad_output=st.session_state.ad_output,
             )
 
     with st.expander("Retrieval trace — inspect the evidence"):
