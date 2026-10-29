@@ -1,0 +1,228 @@
+import { useEffect, useRef, useState } from "react";
+import { api } from "../api.js";
+
+function Slider({ label, value, min, max, step = 1, unit = "", onChange, disabled }) {
+  return (
+    <div className="slider-row">
+      <div className="top">
+        <span>{label}</span>
+        <span>{Number(value).toFixed(step < 1 ? 2 : 0)}{unit}</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value} disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))} aria-label={label} />
+    </div>
+  );
+}
+
+function Color({ label, value, onChange, disabled }) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <input type="color" value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} />
+    </div>
+  );
+}
+
+const TABS = [
+  ["headline", "Headline"],
+  ["copy", "Ad copy"],
+  ["cta", "CTA button"],
+  ["background", "Bands"],
+];
+
+export default function PosterStudio({ gen, editor, onError }) {
+  const [layers, setLayers] = useState(() => structuredClone(editor.layers));
+  const [scrim, setScrim] = useState(() => structuredClone(editor.scrim));
+  const [fonts, setFonts] = useState(editor.fonts);
+  const [tab, setTab] = useState("headline");
+  const [guides, setGuides] = useState(true);
+  const [preview, setPreview] = useState("");
+  const [rendering, setRendering] = useState(false);
+  const [status, setStatus] = useState("review"); // review | approved | rejected
+  const [saving, setSaving] = useState(false);
+  const shownAt = useRef(Date.now());
+  const previewUrl = useRef("");
+
+  const locked = status !== "review";
+
+  // Live preview: debounce edits, cancel stale requests, never show the raw image.
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setRendering(true);
+      try {
+        const blob = await api.renderPoster(gen.id, { layers, scrim }, guides && !locked, controller.signal);
+        const url = URL.createObjectURL(blob);
+        if (previewUrl.current) URL.revokeObjectURL(previewUrl.current);
+        previewUrl.current = url;
+        setPreview(url);
+      } catch (err) {
+        if (err.name !== "AbortError") onError(err.message);
+      } finally {
+        if (!controller.signal.aborted) setRendering(false);
+      }
+    }, 280);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [layers, scrim, guides, locked, gen.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => () => previewUrl.current && URL.revokeObjectURL(previewUrl.current), []);
+
+  const setLayer = (name, patch) => setLayers((prev) => ({ ...prev, [name]: { ...prev[name], ...patch } }));
+  const reset = () => { setLayers(structuredClone(editor.layers)); setScrim(structuredClone(editor.scrim)); };
+
+  const decide = async (decision) => {
+    setSaving(true);
+    try {
+      const seconds = (Date.now() - shownAt.current) / 1000;
+      await api.review(gen.id, decision, { layers, scrim }, seconds);
+      setStatus(decision);
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addFont = async (file) => {
+    if (!file) return;
+    try {
+      const res = await api.uploadFont(file);
+      setFonts(res.fonts);
+      setLayer(tab === "background" ? "headline" : tab, { font: res.font });
+    } catch (err) {
+      onError(err.message);
+    }
+  };
+
+  const L = layers[tab];
+
+  return (
+    <div className="studio">
+      <div className="panel">
+        <div className="tabs" role="tablist">
+          {TABS.map(([id, label]) => (
+            <button key={id} role="tab" aria-selected={tab === id} className={`tab ${tab === id ? "active" : ""}`} onClick={() => setTab(id)}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="panel-body">
+          {tab !== "background" && L && (
+            <>
+              <div className="field">
+                <label htmlFor={`text-${tab}`}>{tab === "cta" ? "Button text" : tab === "copy" ? "Ad copy" : "Headline"}</label>
+                <textarea id={`text-${tab}`} className="textarea" rows={tab === "copy" ? 4 : 2} value={L.text} disabled={locked}
+                  onChange={(e) => setLayer(tab, { text: e.target.value })} />
+              </div>
+              <div className="field">
+                <label htmlFor={`font-${tab}`}>Font</label>
+                <select id={`font-${tab}`} className="select" value={L.font} disabled={locked}
+                  onChange={(e) => setLayer(tab, { font: e.target.value })}>
+                  {fonts.map((f) => <option key={f} value={f}>{f}</option>)}
+                  {!fonts.length && <option value="">Built-in default</option>}
+                </select>
+                <label className="btn sm ghost" style={{ marginTop: 6, cursor: "pointer" }}>
+                  Add a font file (.ttf / .otf)
+                  <input type="file" accept=".ttf,.otf" hidden disabled={locked} onChange={(e) => { addFont(e.target.files[0]); e.target.value = ""; }} />
+                </label>
+              </div>
+              <div className="row2">
+                <Slider label="Size" value={L.size} min={12} max={160} disabled={locked} onChange={(v) => setLayer(tab, { size: v })} />
+                <Color label="Text colour" value={L.color} disabled={locked} onChange={(v) => setLayer(tab, { color: v })} />
+              </div>
+              <Slider label="Horizontal position" unit="%" value={L.x} min={0} max={100} disabled={locked} onChange={(v) => setLayer(tab, { x: v })} />
+              <Slider label="Vertical position" unit="%" value={L.y} min={0} max={100} disabled={locked} onChange={(v) => setLayer(tab, { y: v })} />
+
+              {tab !== "cta" ? (
+                <>
+                  <Slider label="Text box width" unit="%" value={L.width} min={20} max={100} disabled={locked} onChange={(v) => setLayer(tab, { width: v })} />
+                  <div className="field">
+                    <label>Alignment</label>
+                    <div className="segmented" role="radiogroup" aria-label="Alignment">
+                      {["left", "center", "right"].map((a) => (
+                        <button key={a} role="radio" aria-checked={L.align === a} className={L.align === a ? "on" : ""} disabled={locked} onClick={() => setLayer(tab, { align: a })}>{a}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <Slider label="Line spacing" value={L.line_spacing} min={0.9} max={2} step={0.05} disabled={locked} onChange={(v) => setLayer(tab, { line_spacing: v })} />
+                  <Slider label="Text opacity" value={L.opacity} min={0.1} max={1} step={0.05} disabled={locked} onChange={(v) => setLayer(tab, { opacity: v })} />
+                  <label className="check">
+                    <input type="checkbox" checked={L.shadow} disabled={locked} onChange={(e) => setLayer(tab, { shadow: e.target.checked })} />
+                    Drop shadow
+                  </label>
+                  <div className="row2">
+                    <Slider label="Outline" value={L.stroke} min={0} max={8} disabled={locked} onChange={(v) => setLayer(tab, { stroke: v })} />
+                    <Color label="Outline colour" value={L.stroke_color} disabled={locked} onChange={(v) => setLayer(tab, { stroke_color: v })} />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Color label="Button colour" value={L.button_color} disabled={locked} onChange={(v) => setLayer("cta", { button_color: v })} />
+                  <div className="row2">
+                    <Slider label="Corner radius" value={L.radius} min={0} max={60} disabled={locked} onChange={(v) => setLayer("cta", { radius: v })} />
+                    <Slider label="Padding" value={L.pad} min={10} max={80} disabled={locked} onChange={(v) => setLayer("cta", { pad: v })} />
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
+          {tab === "background" && (
+            <>
+              <p className="stage-hint" style={{ color: "var(--ink-3)" }}>
+                Soft colour bands behind the text keep it readable on any photo.
+              </p>
+              <Color label="Band colour" value={scrim.color} disabled={locked} onChange={(v) => setScrim({ ...scrim, color: v })} />
+              <Slider label="Band strength" value={scrim.strength} min={0} max={1} step={0.05} disabled={locked} onChange={(v) => setScrim({ ...scrim, strength: v })} />
+              <Slider label="Top band height" unit="px" value={scrim.top_h} min={0} max={600} disabled={locked} onChange={(v) => setScrim({ ...scrim, top_h: v })} />
+              <Slider label="Bottom band height" unit="px" value={scrim.bottom_h} min={0} max={700} disabled={locked} onChange={(v) => setScrim({ ...scrim, bottom_h: v })} />
+            </>
+          )}
+        </div>
+
+        <div className="panel-foot">
+          <label className="check">
+            <input type="checkbox" checked={guides} disabled={locked} onChange={(e) => setGuides(e.target.checked)} />
+            Show position guides
+          </label>
+          <button className="btn sm" onClick={reset} disabled={locked}>Reset all edits</button>
+        </div>
+      </div>
+
+      <div className="stage">
+        <div className="stage-canvas">
+          {preview && <img src={preview} alt="Poster preview" />}
+          {rendering && <div className="busy"><span className="spinner" /> Updating</div>}
+        </div>
+
+        {status === "review" && (
+          <>
+            <div className="stage-actions">
+              <button className="btn ok" onClick={() => decide("approved")} disabled={saving || rendering}>Approve poster</button>
+              <button className="btn" onClick={() => decide("rejected")} disabled={saving}>Reject</button>
+            </div>
+            <p className="stage-hint">
+              Download unlocks after you approve. Every decision, and whether you edited the text, is saved to review_log.jsonl.
+            </p>
+          </>
+        )}
+        {status === "approved" && (
+          <>
+            <div className="alert ok">Approved and logged. The final poster is ready.</div>
+            <div className="stage-actions">
+              <a className="btn primary" href={api.downloadUrl(gen.id)} download>Download poster</a>
+              <button className="btn" onClick={() => setStatus("review")}>Edit again</button>
+            </div>
+          </>
+        )}
+        {status === "rejected" && (
+          <>
+            <div className="alert warn">Rejected and logged. Edit your brief and generate again.</div>
+            <button className="btn" onClick={() => setStatus("review")}>Keep editing</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
