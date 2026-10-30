@@ -65,6 +65,7 @@ export default function AdResult({ gen, onError, onContinue }) {
           <span>Retrieval <b>{timing.retrieval_seconds.toFixed(1)}s</b></span>
           <span>Text generation <b>{timing.generation_seconds.toFixed(1)}s</b></span>
           <span>Total <b>{timing.total_seconds.toFixed(1)}s</b></span>
+          {gen.writer_model && <span>Writer <b>{gen.writer_model.split("/").pop()}</b></span>}
         </div>
       </div>
 

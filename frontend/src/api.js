@@ -22,7 +22,11 @@ export const api = {
   config: () => request("/config").then((r) => r.json()),
   catalogue: () => request("/catalogue").then((r) => r.json()),
   generate: (prompt, top_k) => request("/generate", json({ prompt, top_k })).then((r) => r.json()),
+  generation: (id) => request(`/generations/${id}`).then((r) => r.json()),
   generateImage: (id) => request(`/generations/${id}/image`, { method: "POST" }).then((r) => r.json()),
+  savePoster: (id, config) =>
+    request(`/generations/${id}/poster/saved`, { ...json({ config }), method: "PUT" }).then((r) => r.json()),
+  reopenPoster: (id) => request(`/generations/${id}/poster/reopen`, { method: "POST" }).then((r) => r.json()),
   renderPoster: (id, config, guides, signal) =>
     request(`/generations/${id}/poster/render`, { ...json({ config, guides }), signal }).then((r) => r.blob()),
   review: (id, decision, config, seconds) =>

@@ -4,3 +4,11 @@ __pycache__/
 .streamlit/secrets.toml
 *.pyc
 .DS_Store
+venv/
+node_modules/
+frontend/dist/
+backend/generations/
+backend/fonts/google/
+backend/fonts/pairing_history.json
+backend/cache/
+eval_results/

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "./api.js";
 import Brief from "./components/Brief.jsx";
 import AdResult from "./components/AdResult.jsx";
-import PosterStudio from "./components/PosterStudio.jsx";
+import PosterStudio, { keptPoster, sameConfig } from "./components/PosterStudio.jsx";
 import Evidence from "./components/Evidence.jsx";
 
 const VIEWS = {
@@ -14,8 +14,17 @@ const VIEWS = {
 const HEADINGS = {
   brief: ["Brief your campaign", "Describe the product, audience and tone. Brandora checks your catalogue and brand rules before it writes a word."],
   ad: ["Your advertisement", "Copy grounded in your catalogue and guidelines. Read the notes on the right before you build the poster."],
-  poster: ["Poster studio", "Generate the visual, then edit the type, colours and layout. Approve to unlock the download."],
+  poster: ["Poster studio", "Generate the visual, then edit the type, colours and layout. Keep your changes, then approve to unlock the download."],
   evidence: ["Evidence", "The exact records Brandora retrieved, plus the full catalogue and guidelines it works from."],
+};
+
+// The open advertisement is remembered so a reload (or a server restart) brings it back.
+const SESSION_KEY = "brandora.session";
+const readSession = () => {
+  try { return JSON.parse(localStorage.getItem(SESSION_KEY)) || null; } catch { return null; }
+};
+const writeSession = (value) => {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(value)); } catch { /* storage unavailable */ }
 };
 
 export default function App() {
@@ -26,6 +35,7 @@ export default function App() {
   const [topK, setTopK] = useState(6);
   const [gen, setGen] = useState(null);
   const [editor, setEditor] = useState(null);
+  const [draft, setDraft] = useState(null);   // poster edits in progress (kept ones live in editor.saved)
   const [imageVersion, setImageVersion] = useState(0);
   const [busy, setBusy] = useState(null); // "generate" | "image"
   const [error, setError] = useState("");
@@ -33,7 +43,34 @@ export default function App() {
   useEffect(() => {
     api.config().then((c) => { setConfig(c); setPrompt((p) => p || c.example_prompt); }).catch((e) => setError(e.message));
     api.catalogue().then(setCatalogue).catch((e) => setError(e.message));
+
+    const session = readSession();
+    if (session?.id) {
+      api.generation(session.id)
+        .then((result) => {
+          setGen(result);
+          setPrompt(result.prompt);
+          openEditor(result.editor);
+          setView(session.view === "poster" || session.view === "ad" ? session.view : "ad");
+        })
+        .catch(() => writeSession(null));
+    }
   }, []);
+
+  useEffect(() => { if (gen) writeSession({ id: gen.id, view }); }, [gen, view]);
+
+  const openEditor = (next) => {
+    setEditor(next);
+    setDraft(next ? keptPoster(next) : null);
+  };
+
+  const unsaved = Boolean(editor && draft && !sameConfig(draft, keptPoster(editor)));
+  useEffect(() => {
+    if (!unsaved) return;
+    const warn = (e) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [unsaved]);
 
   const generate = useCallback(async () => {
     if (!prompt.trim()) return setError("Enter a campaign brief first.");
@@ -42,7 +79,7 @@ export default function App() {
     try {
       const result = await api.generate(prompt.trim(), topK);
       setGen(result);
-      setEditor(null);
+      openEditor(null);
       setView("ad");
     } catch (err) {
       setError(err.message);
@@ -56,7 +93,7 @@ export default function App() {
     setBusy("image");
     try {
       const res = await api.generateImage(gen.id);
-      setEditor(res.editor);
+      openEditor(res.editor);
       setImageVersion((v) => v + 1);
     } catch (err) {
       setError(err.message);
@@ -88,7 +125,7 @@ export default function App() {
                 <span className="step-dot">{stepState(id) === "done" ? "✓" : i + 1}</span>
                 <span>
                   <span className="step-title">{v.title}</span>
-                  <span className="step-hint">{v.hint}</span>
+                  <span className="step-hint">{id === "poster" && unsaved ? "Unsaved poster changes" : v.hint}</span>
                 </span>
               </button>
             </li>
@@ -139,12 +176,13 @@ export default function App() {
         )}
 
         {view === "poster" && gen && (
-          editor ? (
+          editor && draft ? (
             <>
-              <PosterStudio key={`${gen.id}-${imageVersion}`} gen={gen} editor={editor} onError={setError} />
+              <PosterStudio key={`${gen.id}-${imageVersion}`} gen={gen} editor={editor} setEditor={setEditor}
+                draft={draft} setDraft={setDraft} onError={setError} />
               <p className="foot-note">
-                Prefer a one-click layout? <a href={api.autoLayoutUrl(gen.id, true)} download>Download the auto-layout version</a>.
-                The raw image stays hidden because image models can draw pseudo-text.
+                Prefer the layout exactly as designed? <a href={api.autoLayoutUrl(gen.id, true)} download>Download the auto-layout version</a>.
+                The raw photo stays hidden; only the typeset poster is shown.
               </p>
             </>
           ) : (
@@ -152,14 +190,15 @@ export default function App() {
               <div className="image-prompt">
                 <h2>Generate the ad image</h2>
                 <p>
-                  Brandora sends the visual direction and relevant catalogue facts to Cloudflare. The image model
-                  creates the visual only; the approved headline and CTA are typeset on top afterwards.
+                  Brandora turns the visual direction into a plain photo description, with no words, logos or layout
+                  in it, and checks every photo for stray lettering and clutter. Your headline, copy and button are
+                  typeset afterwards, placed around the product.
                 </p>
                 {config && !config.cloudflare_ready && (
-                  <div className="alert warn">Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to backend/.env to enable image generation.</div>
+                  <div className="alert warn">Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to .env to enable image generation.</div>
                 )}
                 <button className="btn primary" onClick={generateImage} disabled={busy === "image"}>
-                  {busy === "image" ? <><span className="spinner" /> Generating the visual…</> : "Generate image with Cloudflare"}
+                  {busy === "image" ? <><span className="spinner" /> Generating and checking the photo…</> : "Generate image with Cloudflare"}
                 </button>
               </div>
             </section>

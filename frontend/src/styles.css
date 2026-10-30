@@ -229,6 +229,12 @@ input[type="color"] { width: 100%; height: 40px; padding: 3px; border: 1px solid
 .stage-canvas .busy { position: absolute; top: 12px; right: 12px; padding: 5px 10px; border-radius: 999px; background: rgba(0, 0, 0, 0.65); color: #fff; font-size: 12px; display: flex; gap: 8px; align-items: center; }
 .stage-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .stage-hint { color: #9aa0b4; font-size: 13px; }
+.stage-hint b { color: #eef0f6; font-weight: 600; text-transform: capitalize; }
+.save-bar { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 14px; border: 1px solid #343a4c; border-radius: var(--radius-m); background: #171a24; }
+.save-state { flex: 1; font-size: 13px; color: #9aa0b4; display: inline-flex; align-items: center; gap: 8px; }
+.save-state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.save-state.dirty { color: #f0b255; }
+.save-state.dirty::before { background: #f0b255; }
 .stage .btn { background: #1f2330; border-color: #343a4c; color: #eef0f6; }
 .stage .btn:hover:not(:disabled) { background: #272c3b; border-color: #5a617a; }
 .stage .btn.ok { background: var(--ok); border-color: var(--ok); color: #fff; }
