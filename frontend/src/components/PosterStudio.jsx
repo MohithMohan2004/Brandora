@@ -30,20 +30,29 @@ const TABS = [
   ["background", "Bands"],
 ];
 
-export default function PosterStudio({ gen, editor, onError }) {
-  const [layers, setLayers] = useState(() => structuredClone(editor.layers));
-  const [scrim, setScrim] = useState(() => structuredClone(editor.scrim));
+// The poster as last kept by the user, or the generated design if nothing was kept yet.
+export const keptPoster = (editor) => structuredClone(editor.saved ?? { layers: editor.layers, scrim: editor.scrim });
+export const sameConfig = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+// The draft lives in App, so edits survive switching steps; "Keep changes" stores it on the server.
+export default function PosterStudio({ gen, editor, setEditor, draft, setDraft, onError }) {
+  const { layers, scrim } = draft;
   const [fonts, setFonts] = useState(editor.fonts);
   const [tab, setTab] = useState("headline");
   const [guides, setGuides] = useState(true);
   const [preview, setPreview] = useState("");
   const [rendering, setRendering] = useState(false);
-  const [status, setStatus] = useState("review"); // review | approved | rejected
   const [saving, setSaving] = useState(false);
   const shownAt = useRef(Date.now());
   const previewUrl = useRef("");
 
+  const status = editor.status || "review"; // review | approved | rejected
   const locked = status !== "review";
+  const kept = keptPoster(editor);
+  const dirty = !sameConfig(draft, kept);
+  const designed = { layers: editor.layers, scrim: editor.scrim };
+  const setLayers = (fn) => setDraft((d) => ({ ...d, layers: fn(d.layers) }));
+  const setScrim = (next) => setDraft((d) => ({ ...d, scrim: next }));
 
   // Live preview: debounce edits, cancel stale requests, never show the raw image.
   useEffect(() => {
@@ -68,18 +77,40 @@ export default function PosterStudio({ gen, editor, onError }) {
   useEffect(() => () => previewUrl.current && URL.revokeObjectURL(previewUrl.current), []);
 
   const setLayer = (name, patch) => setLayers((prev) => ({ ...prev, [name]: { ...prev[name], ...patch } }));
-  const reset = () => { setLayers(structuredClone(editor.layers)); setScrim(structuredClone(editor.scrim)); };
+  const resetToDesign = () => setDraft(structuredClone(designed));
+  const discard = () => setDraft(kept);
+
+  const keep = async () => {
+    setSaving(true);
+    try {
+      const res = await api.savePoster(gen.id, draft);
+      setEditor((e) => ({ ...e, saved: structuredClone(draft), saved_at: res.saved_at, status: "review" }));
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const decide = async (decision) => {
     setSaving(true);
     try {
       const seconds = (Date.now() - shownAt.current) / 1000;
-      await api.review(gen.id, decision, { layers, scrim }, seconds);
-      setStatus(decision);
+      const res = await api.review(gen.id, decision, draft, seconds);
+      setEditor((e) => ({ ...e, saved: structuredClone(draft), saved_at: res.saved_at, status: decision }));
     } catch (err) {
       onError(err.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const reopen = async () => {
+    try {
+      await api.reopenPoster(gen.id);
+      setEditor((e) => ({ ...e, status: "review" }));
+    } catch (err) {
+      onError(err.message);
     }
   };
 
@@ -186,7 +217,10 @@ export default function PosterStudio({ gen, editor, onError }) {
             <input type="checkbox" checked={guides} disabled={locked} onChange={(e) => setGuides(e.target.checked)} />
             Show position guides
           </label>
-          <button className="btn sm" onClick={reset} disabled={locked}>Reset all edits</button>
+          <button className="btn sm" onClick={resetToDesign} disabled={locked || sameConfig(draft, designed)}
+            title="Go back to the generated design (keep changes afterwards to make it stick)">
+            Reset to design
+          </button>
         </div>
       </div>
 
@@ -196,14 +230,42 @@ export default function PosterStudio({ gen, editor, onError }) {
           {rendering && <div className="busy"><span className="spinner" /> Updating</div>}
         </div>
 
+        {editor.design && (
+          <p className="stage-hint">
+            Designed in a <b>{editor.design.style}</b> style: {editor.design.headline} with {editor.design.body}.
+          </p>
+        )}
+        {editor.image_check?.verdict && (
+          editor.image_check.verdict.lettering ? (
+            <div className="alert warn">
+              The photo may still contain stray lettering after {editor.image_check.attempts} tries. Generate the image again for a cleaner one.
+            </div>
+          ) : (
+            <p className="stage-hint">
+              Photo checked: no lettering{editor.image_check.verdict.cluttered ? "" : ", tidy composition"}
+              {editor.image_check.attempts > 1 ? ` (best of ${editor.image_check.attempts} tries)` : ""}. All words are typeset by Brandora.
+            </p>
+          )
+        )}
+
         {status === "review" && (
           <>
+            <div className="save-bar">
+              <span className={`save-state ${dirty ? "dirty" : ""}`}>
+                {dirty ? "Unsaved changes" : editor.saved_at ? `Changes kept · ${editor.saved_at.replace("T", " ").slice(0, 16)}` : "Generated design"}
+              </span>
+              <button className="btn sm" onClick={discard} disabled={!dirty || saving}>Discard</button>
+              <button className="btn sm primary" onClick={keep} disabled={!dirty || saving}>
+                {saving ? <><span className="spinner" /> Keeping…</> : "Keep changes"}
+              </button>
+            </div>
             <div className="stage-actions">
               <button className="btn ok" onClick={() => decide("approved")} disabled={saving || rendering}>Approve poster</button>
               <button className="btn" onClick={() => decide("rejected")} disabled={saving}>Reject</button>
             </div>
             <p className="stage-hint">
-              Download unlocks after you approve. Every decision, and whether you edited the text, is saved to review_log.jsonl.
+              Kept changes come back when you return to this step or reopen Brandora. Approving also keeps them and unlocks
+              the download. Every decision, and whether you edited the text, is saved to review_log.jsonl.
             </p>
           </>
         )}
@@ -212,14 +274,14 @@ export default function PosterStudio({ gen, editor, onError }) {
             <div className="alert ok">Approved and logged. The final poster is ready.</div>
             <div className="stage-actions">
               <a className="btn primary" href={api.downloadUrl(gen.id)} download>Download poster</a>
-              <button className="btn" onClick={() => setStatus("review")}>Edit again</button>
+              <button className="btn" onClick={reopen}>Edit again</button>
             </div>
           </>
         )}
         {status === "rejected" && (
           <>
             <div className="alert warn">Rejected and logged. Edit your brief and generate again.</div>
-            <button className="btn" onClick={() => setStatus("review")}>Keep editing</button>
+            <button className="btn" onClick={reopen}>Keep editing</button>
           </>
         )}
       </div>

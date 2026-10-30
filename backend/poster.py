@@ -1,9 +1,10 @@
 """poster.py - poster engine for Brandora.
 
 Renders the final poster (background image + readability bands + text layers),
-discovers and stores fonts, validates editor settings sent by the React UI and
-appends every Approve / Reject decision to review_log.jsonl (useful evidence
-for the paper).
+designs a starting layout for each image (font pairing from typography.py,
+colours sampled from the photo, text sizes fitted to the space), discovers and
+stores fonts, validates editor settings sent by the React UI and appends every
+Approve / Reject decision to review_log.jsonl (useful evidence for the paper).
 
 The Streamlit editor that used to live here is now the React "Poster studio";
 this module only holds the logic that the FastAPI layer in app.py calls.
@@ -16,7 +17,9 @@ import threading
 from datetime import datetime
 from functools import lru_cache
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+
+import typography
 
 W = H = 1080
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -59,6 +62,14 @@ def refresh_fonts():
     return discover_fonts()
 
 
+def font_registry():
+    """{display name: (path, weight or None)}: designed Google faces first, then system fonts."""
+    fonts = typography.designed_fonts()
+    for name, path in discover_fonts().items():
+        fonts.setdefault(name, (path, None))
+    return fonts
+
+
 def save_uploaded_font(filename, data):
     """Store an uploaded font in ./fonts so it persists. Returns the display name."""
     safe_name = os.path.basename(filename or "")
@@ -91,10 +102,19 @@ def pick_default_font(fonts, bold):
     return next(iter(fonts), "")
 
 
-def load_font(path, size):
+@lru_cache(maxsize=256)
+def load_font(path, size, wght=None):
     try:
         if path:
-            return ImageFont.truetype(path, size=int(size))
+            font = ImageFont.truetype(path, size=int(size))
+            if wght:
+                # Variable font: set the weight axis, leave the others at their defaults.
+                axes = font.get_variation_axes()
+                font.set_variation_by_axes([
+                    wght if axis.get("name") in (b"Weight", "Weight") else axis["default"]
+                    for axis in axes
+                ])
+            return font
     except Exception:
         pass
     try:
@@ -195,9 +215,9 @@ def render_poster(base_bytes, cfg, guides=False):
     boxes = {}
     for name in ("headline", "copy"):
         layer = cfg["layers"][name]
-        boxes[name] = _draw_block(draw, layer, load_font(layer["font_path"], layer["size"]))
+        boxes[name] = _draw_block(draw, layer, load_font(layer["font_path"], layer["size"], layer.get("font_wght")))
     cta = cfg["layers"]["cta"]
-    boxes["cta"] = _draw_cta(draw, cta, load_font(cta["font_path"], cta["size"]))
+    boxes["cta"] = _draw_cta(draw, cta, load_font(cta["font_path"], cta["size"], cta.get("font_wght")))
     out = Image.alpha_composite(out, text_layer)
 
     if guides:  # preview-only outlines to help with positioning
@@ -228,7 +248,7 @@ LAYER_DEFAULTS = {
                 line_spacing=1.0, shadow=False, stroke=0, stroke_color="#FFFFFF",
                 opacity=1.0, bold=True, button_color="#182B30", radius=20, pad=36),
 }
-SCRIM_DEFAULTS = dict(color="#FAF5EB", strength=0.75, top_h=300, bottom_h=380)
+SCRIM_DEFAULTS = dict(color="#FAF5EB", strength=0.15, top_h=300, bottom_h=380)
 
 
 def build_default_cfg(texts, fonts):
@@ -243,16 +263,250 @@ def build_default_cfg(texts, fonts):
 
 
 def editor_defaults(texts):
-    """Everything the React editor needs to start: fonts, layer and band defaults."""
+    """Plain starting layout with system fonts (used when no designed pairing is available)."""
     fonts = discover_fonts()
-    names = list(fonts)
     layers = {}
     for name, d in LAYER_DEFAULTS.items():
         layer = {k: v for k, v in d.items() if k != "bold"}
         layer["text"] = texts[name]
         layer["font"] = pick_default_font(fonts, d["bold"])
         layers[name] = layer
-    return {"fonts": names, "layers": layers, "scrim": dict(SCRIM_DEFAULTS)}
+    return {"fonts": list(font_registry()), "layers": layers, "scrim": dict(SCRIM_DEFAULTS)}
+
+
+# --------------------------------------------------------------------------
+# Designed starting layout: fonts that suit the mood, colours from the photo
+# --------------------------------------------------------------------------
+# Corner radius / padding of the CTA button per typography mood.
+BUTTON_SHAPES = {
+    "minimal": (10, 34), "elegant": (0, 40), "bold": (4, 36), "playful": (40, 34),
+    "organic": (28, 34), "tech": (6, 32), "retro": (16, 36),
+}
+SCRIPT_FAMILIES = {"Pacifico", "Lobster", "Caveat", "Kalam", "Shrikhand"}
+
+
+def _luminance(rgb):
+    def channel(c):
+        c /= 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (channel(float(c)) for c in rgb[:3])
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast(a, b):
+    la, lb = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def _mix(rgb, target, amount):
+    return tuple(int(round(c + (t - c) * amount)) for c, t in zip(rgb[:3], target))
+
+
+def _hex(rgb):
+    return "#{:02X}{:02X}{:02X}".format(*rgb[:3])
+
+
+def _saturation(rgb):
+    hi, lo = max(rgb[:3]), min(rgb[:3])
+    return 0 if hi == 0 else (hi - lo) / hi
+
+
+def _region_color(image, box):
+    return image.crop(box).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+
+
+def _palette(image, count=8):
+    """[(rgb, share)] for the image's dominant colours, largest first."""
+    small = image.resize((120, 120), Image.Resampling.BILINEAR)
+    quant = small.quantize(colors=count, method=Image.Quantize.MEDIANCUT)
+    pal = quant.getpalette()
+    total = 120 * 120
+    return [
+        (tuple(pal[i * 3:i * 3 + 3]), n / total)
+        for n, i in sorted(quant.getcolors(), reverse=True)
+    ]
+
+
+def _ink_for(background, dominant):
+    """A deep or pale version of the photo's dominant colour, whichever reads better."""
+    dark = _mix(_mix(dominant, (0, 0, 0), 0.82), (20, 20, 24), 0.4)
+    light = _mix(dominant, (255, 255, 255), 0.93)
+    return dark if _contrast(dark, background) >= _contrast(light, background) else light
+
+
+def _low_contrast_share(image, box, ink):
+    """Share of the area behind a text block where this ink would read poorly."""
+    small = image.crop(box).resize((64, 24), Image.Resampling.BILINEAR)
+    pixels = list(small.getdata())
+    return sum(_contrast(ink, px) < 2.5 for px in pixels) / len(pixels)
+
+
+def _halo(image, box, ink):
+    """Thin outline in the opposite tone when the photo behind the text is busy."""
+    if _low_contrast_share(image, box, ink) < 0.08:
+        return {"stroke": 0}
+    opposite = (250, 250, 250) if _luminance(ink) < 0.4 else (18, 18, 22)
+    return {"stroke": 2, "stroke_color": _hex(_mix(ink, opposite, 0.9))}
+
+
+def design_colors(image):
+    """Text, band and button colours sampled from the image so the type belongs to the photo."""
+    top_bg = _region_color(image, (0, 0, W, SCRIM_DEFAULTS["top_h"]))
+    bottom_bg = _region_color(image, (0, H - SCRIM_DEFAULTS["bottom_h"], W, H))
+    palette = _palette(image)
+    dominant = palette[0][0]
+
+    head_ink = _ink_for(top_bg, dominant)
+    copy_ink = _ink_for(bottom_bg, dominant)
+    copy_is_dark = _luminance(copy_ink) < 0.4
+    band = (_mix(bottom_bg, (255, 255, 255), 0.7) if copy_is_dark
+            else _mix(bottom_bg, (0, 0, 0), 0.65))
+
+    # Button: the most vivid colour that occupies a real part of the photo.
+    vivid = [c for c, share in palette if share >= 0.02] or [dominant]
+    accent = max(vivid, key=lambda c: _saturation(c) * (0.6 + 0.4 * (1 - abs(_luminance(c) - 0.35))))
+    if _saturation(accent) < 0.18:      # greyish photo: use the ink colour as the button
+        accent = copy_ink
+    if _contrast(accent, bottom_bg) < 2.2:
+        accent = _mix(accent, (0, 0, 0) if _luminance(bottom_bg) > 0.4 else (255, 255, 255), 0.55)
+    button_text = max([(255, 255, 255), _mix(accent, (0, 0, 0), 0.85)],
+                      key=lambda c: _contrast(c, accent))
+
+    return {
+        "headline": head_ink, "copy": copy_ink, "band": band,
+        "button": accent, "button_text": button_text,
+        "shadow_headline": _luminance(head_ink) > 0.5,
+        "shadow_copy": _luminance(copy_ink) > 0.5,
+    }
+
+
+def _fit(text, path, wght, max_w, max_h, max_lines, start, smallest, spacing):
+    """(size, line count, fits): largest size at which the wrapped text fits the box."""
+    draw = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+    for size in range(start, smallest - 1, -2):
+        lines = _wrap(draw, text, load_font(path, size, wght), max_w)
+        if len(lines) <= max_lines and size * spacing * len(lines) <= max_h:
+            return size, len(lines), True
+    return smallest, len(_wrap(draw, text, load_font(path, smallest, wght), max_w)), False
+
+
+def subject_span(image):
+    """(top, bottom) in px of the rows holding the product, or None.
+
+    A backdrop, table edge or horizon is roughly one colour across its row,
+    while the product stands out from the rest of the row it sits in. Rows
+    with many such standout pixels are where the product is; text stays out.
+    """
+    small = image.resize((120, 120), Image.Resampling.BILINEAR).filter(ImageFilter.GaussianBlur(1))
+    px = small.load()
+    rows = []
+    for y in range(120):
+        line = [px[x, y] for x in range(120)]
+        med = [sorted(c[i] for c in line)[60] for i in range(3)]
+        rows.append(sum(
+            sum((c[i] - med[i]) ** 2 for i in range(3)) > 40 ** 2 for c in line
+        ) / 120)
+    peak = max(rows)
+    if peak < 0.03:
+        return None
+    hot = [y for y, v in enumerate(rows) if v > max(0.03, 0.25 * peak)]
+    # Merge into runs (gaps under 5% of the height); keep the run with most mass.
+    runs, start, prev = [], hot[0], hot[0]
+    for y in hot[1:]:
+        if y - prev > 6:
+            runs.append((start, prev))
+            start = y
+        prev = y
+    runs.append((start, prev))
+    top, bottom = max(runs, key=lambda r: sum(rows[r[0]:r[1] + 1]))
+    scale = H / 120
+    return int(top * scale), int((bottom + 1) * scale)
+
+
+def covers_text(family, weight, text):
+    """True when this catalogue face has a real glyph for every character in text."""
+    path, wght = typography.designed_fonts().get(typography.face_name(family, weight), (None, None))
+    if not path:
+        return False
+    font = load_font(path, 40, wght)
+
+    def glyph(ch):
+        img = Image.new("L", (90, 90))
+        ImageDraw.Draw(img).text((10, 10), ch, font=font, fill=255)
+        return img.tobytes()
+
+    missing = glyph("\U0010FFFD")   # what an absent glyph renders as
+    return all(ch.isspace() or ord(ch) < 128 or glyph(ch) != missing for ch in set(text))
+
+
+def design_poster(base_bytes, texts, pairing):
+    """A finished starting layout for the editor, built around this image and pairing."""
+    image = Image.open(io.BytesIO(base_bytes)).convert("RGB")
+    image = ImageOps.fit(image, (W, H), method=Image.Resampling.LANCZOS)
+    colors = design_colors(image)
+    fonts = font_registry()
+    style = pairing["style"]
+    names = {part: typography.face_name(*pairing[part]) for part in ("headline", "body", "cta")}
+
+    head_spacing = 1.22 if pairing["headline"][0] in SCRIPT_FAMILIES else 1.08
+    layers = {}
+    for name in ("headline", "copy", "cta"):
+        layer = {k: v for k, v in LAYER_DEFAULTS[name].items() if k != "bold"}
+        layer["text"] = texts[name]
+        layer["font"] = names["body" if name == "copy" else name]
+        layers[name] = layer
+
+    head, copy, cta = layers["headline"], layers["copy"], layers["cta"]
+    head.update(color=_hex(colors["headline"]), shadow=colors["shadow_headline"],
+                line_spacing=head_spacing)
+    copy.update(color=_hex(colors["copy"]), shadow=colors["shadow_copy"])
+    radius, pad = BUTTON_SHAPES.get(style, (20, 36))
+    cta.update(color=_hex(colors["button_text"]), button_color=_hex(colors["button"]),
+               radius=radius, pad=pad)
+
+    # Keep the text clear of the product: headline above it, copy below it (or
+    # under the headline when there is no room below), button at the bottom.
+    subj_top, subj_bottom = subject_span(image) or (H // 3, 2 * H // 3)
+    gap, top_margin = 18, 44
+
+    path, wght = fonts[head["font"]]
+    head_room = max(110, min(230, subj_top - gap - top_margin))
+    head["size"], lines, _ = _fit(head["text"], path, wght, head["width"] / 100 * W,
+                                  head_room, 3, 96, 34, head_spacing)
+    head_h = head["size"] * head_spacing * lines
+    head["y"] = round((top_margin + head_h / 2) / H * 100, 2)
+
+    path, wght = fonts[cta["font"]]
+    cta["size"], _, _ = _fit(cta["text"], path, wght, 700, 60, 1, 30, 18, 1.0)
+    cta_top = cta["y"] / 100 * H - (cta["size"] + 2 * pad * 0.6) / 2
+
+    path, wght = fonts[copy["font"]]
+    fit_copy = lambda room: _fit(copy["text"], path, wght, copy["width"] / 100 * W,
+                                 room, 9, 34, 20, copy["line_spacing"])
+    below = cta_top - gap - (subj_bottom + gap)
+    above = subj_top - gap - (top_margin + head_h + gap)
+    size, lines, fits = fit_copy(below)
+    if fits:
+        copy_bottom = cta_top - gap
+    else:
+        size, lines, fits = fit_copy(above)
+        if fits:
+            copy_bottom = top_margin + head_h + gap + size * copy["line_spacing"] * lines
+        else:   # no clear space anywhere: sit above the button, outlined if needed
+            size, lines, _ = fit_copy(250)
+            copy_bottom = cta_top - gap
+    copy["size"] = size
+    copy_h = size * copy["line_spacing"] * lines
+    copy_top = copy_bottom - copy_h
+    copy["y"] = round((copy_top + copy_h / 2) / H * 100, 2)
+
+    # The default band is faint, so check what actually sits behind each block.
+    head.update(_halo(image, (60, top_margin, W - 60, int(top_margin + head_h)), colors["headline"]))
+    copy.update(_halo(image, (90, int(copy_top), W - 90, int(copy_bottom)), colors["copy"]))
+
+    scrim = dict(SCRIM_DEFAULTS, color=_hex(colors["band"]))
+    return {"fonts": list(fonts), "layers": layers, "scrim": scrim,
+            "design": {"style": style, **names}}
 
 
 # --------------------------------------------------------------------------
@@ -278,7 +532,8 @@ def config_from_payload(payload):
     Font *names* are mapped to paths on the server, so the browser can never
     point the renderer at an arbitrary file.
     """
-    fonts = discover_fonts()
+    fonts = font_registry()
+    fallback = discover_fonts()
     payload = payload or {}
     layers_in = payload.get("layers", {})
     layers = {}
@@ -286,9 +541,8 @@ def config_from_payload(payload):
         src = layers_in.get(name, {})
         layer = dict(d)
         layer["text"] = str(src.get("text", ""))[:600]
-        layer["font_path"] = fonts.get(
-            src.get("font"), fonts.get(pick_default_font(fonts, d["bold"]), "")
-        )
+        path, wght = fonts.get(src.get("font")) or (fallback.get(pick_default_font(fallback, d["bold"]), ""), None)
+        layer["font_path"], layer["font_wght"] = path, wght
         layer["size"] = int(_num(src.get("size"), 12, 160, d["size"]))
         layer["x"] = _num(src.get("x"), 0, 100, d["x"])
         layer["y"] = _num(src.get("y"), 0, 100, d["y"])

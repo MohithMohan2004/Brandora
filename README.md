@@ -12,22 +12,37 @@ brandora/
 └── frontend/           # React (Vite)
 ```
 
-## Run (two terminals)
+## Run (one command)
 
 ```bash
-# 1. backend
-cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env            # add Cloudflare keys
-uvicorn app:app --reload --port 8000
-
-# 2. frontend
-cd frontend
-npm install
-npm run dev                     # http://localhost:5173  (proxies /api to :8000)
+./start.sh
 ```
 
-Single-port option: `npm run build` in `frontend/`, then run only uvicorn and open http://localhost:8000.
+Open http://localhost:8000. The script creates `venv/` and installs the Python and
+npm packages when they are missing, rebuilds the React app when `frontend/src`
+changed, and then serves the UI and the API from one FastAPI process.
 
-Ollama must be running with your chat and embedding models, as before.
+While working on the code, `./start.sh --dev` runs the backend with auto-reload
+and the Vite dev server at http://localhost:5173.
+
+Keys live in `.env` at the repo root (copy `.env.example`). Ollama must be running
+with the embedding model (`embeddinggemma`) for catalogue retrieval.
+
+## How it works
+
+- **Writer:** Cloudflare Workers AI (`llama-3.3-70b-instruct-fp8-fast`, then
+  `llama-3.1-8b-instruct-fast`) writes the brief in ~5s. Local Ollama is only a fallback.
+- **Image (text-free):** the image model never sees the ad copy. A fast model rewrites
+  the visual direction as a plain photo description, with any mention of words, logos
+  or layout removed, and asks for an uncluttered scene with empty space above and below
+  the product. FLUX.2 klein draws it, and a vision model checks for stray lettering or
+  clutter, retrying up to 3 times.
+- **Poster design:** each image gets a font pairing that matches the brief's
+  typography mood (minimal, elegant, bold, playful, organic, tech, retro). The fonts
+  come from Google Fonts and are downloaded into `backend/fonts/google/`.
+  `backend/fonts/pairing_history.json` keeps new ads from reusing a recent pairing.
+  Text, band and button colours are sampled from the image. The layout finds where the
+  product sits and keeps the headline above it and the copy below it.
+- **Saving:** "Keep changes" in the poster studio stores your edits on the server
+  (`backend/generations/<id>/`). They come back when you return to the step, reload
+  the page, or restart the app.
