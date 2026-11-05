@@ -18,7 +18,7 @@ import re
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from functools import lru_cache
 from typing import Literal, Optional
 
@@ -30,13 +30,16 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from PIL import Image
+from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 import typography
+from poster import H as POSTER_H
+from poster import W as POSTER_W
 from poster import (
     config_from_payload,
+    subject_span,
     covers_text,
     design_poster,
     editor_defaults,
@@ -69,7 +72,12 @@ CLOUDFLARE_IMAGE_MODEL = os.getenv(
 # and a vision model that checks each photo for lettering and clutter.
 SCENE_MODEL = os.getenv("CLOUDFLARE_SCENE_MODEL", "@cf/meta/llama-3.1-8b-instruct-fast")
 VISION_MODEL = os.getenv("CLOUDFLARE_VISION_MODEL", "@cf/mistralai/mistral-small-3.1-24b-instruct")
-IMAGE_ATTEMPTS = 3
+# Speech-to-text for the dictated brief. Runs on Cloudflare so the mic works in
+# every browser (Chromium on Linux and Firefox have no working Web Speech API).
+STT_MODEL = os.getenv("CLOUDFLARE_STT_MODEL", "@cf/openai/whisper-large-v3-turbo")
+MAX_DICTATION_BYTES = 8 * 1024 * 1024
+IMAGE_ATTEMPTS = 4
+MIN_TEXT_ROOM = 300   # px of a 1080 px poster the product must leave free for the text
 CLOUDFLARE_TEXT_MODELS = [
     m.strip() for m in os.getenv(
         "CLOUDFLARE_TEXT_MODEL",
@@ -192,11 +200,28 @@ def cloudflare_chat(model, content, max_tokens=1000, temperature=0.35, timeout=6
     return text.strip()
 
 
+def cloudflare_transcribe(audio_bytes):
+    """Turn a short recorded brief into text with Whisper on Workers AI."""
+    response = requests.post(
+        f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{STT_MODEL}",
+        headers={"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"},
+        json={"audio": base64.b64encode(audio_bytes).decode("ascii"), "language": "en", "vad_filter": True},
+        timeout=90,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Cloudflare request failed ({response.status_code}): {response.text[:300]}")
+    result = response.json().get("result") or {}
+    return (result.get("text") or "").strip()
+
+
 def cloudflare_generate_text(prompt, model):
     text = cloudflare_chat(model, prompt)
     if "HEADLINE" not in text.upper():
         raise RuntimeError("Cloudflare returned a malformed brief.")
     return text
+
+
+COPY_WORDS = (15, 30)
 
 
 def generate_brief(prompt):
@@ -205,15 +230,49 @@ def generate_brief(prompt):
     if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
         for model in CLOUDFLARE_TEXT_MODELS:
             try:
-                return cloudflare_generate_text(prompt, model), model
+                return fix_copy_length(cloudflare_generate_text(prompt, model), prompt, model), model
             except (requests.exceptions.RequestException, RuntimeError, ValueError) as exc:
                 errors.append(f"{model}: {exc}")
     try:
-        return ollama_generate(prompt), CHAT_MODEL
+        return fix_copy_length(ollama_generate(prompt), prompt, CHAT_MODEL), CHAT_MODEL
     except requests.exceptions.RequestException:
         if errors:
             raise RuntimeError("All writer models failed. " + " | ".join(errors))
         raise
+
+
+def fix_copy_length(brief, prompt, model):
+    """Rewrite only the ad copy when it misses the 15-30 word spec.
+
+    Writer models undershoot to about 10 words, which leaves the poster's copy
+    block thin. One short rewrite against the same catalogue context fixes it;
+    the original stays if the rewrite fails or is still out of range.
+    """
+    lo, hi = COPY_WORDS
+    copy = parse_ad_sections(brief)["copy"]
+    if lo <= len(copy.split()) <= hi:
+        return brief
+    request = f"""{prompt}
+
+The draft AD COPY above came out at {len(copy.split())} words: "{copy}"
+Rewrite only the AD COPY as 1-2 sentences of 18-26 words. Keep its meaning and the price if it has one.
+Use only facts from the context above: no discounts, offers, guarantees or new claims.
+Output only the rewritten ad copy, without a heading or quotes."""
+    try:
+        if model == CHAT_MODEL:
+            new = ollama_generate(request)
+        else:
+            new = cloudflare_chat(model, request, max_tokens=120, temperature=0.3)
+    except (requests.exceptions.RequestException, RuntimeError, ValueError):
+        return brief
+    new = re.sub(r"(?i)^\s*ad copy:\s*", "", new.strip().splitlines()[0] if new.strip() else "").strip(' "\'')
+    if not lo <= len(new.split()) <= hi:
+        return brief
+    pattern = r"(AD COPY:\s*)(.*?)(?=\n\s*CALL TO ACTION:)"
+    if not re.search(pattern, brief, flags=re.IGNORECASE | re.DOTALL):
+        return brief
+    return re.sub(pattern, lambda m: m.group(1) + new, brief, count=1,
+                  flags=re.IGNORECASE | re.DOTALL)
 
 
 def extract_visual_direction(ad_text):
@@ -301,8 +360,8 @@ Square product photograph with lots of empty space. The product is the single he
 small in the frame, shown in full and centred slightly above the middle, with nothing in front of it or
 overlapping it. The top quarter of the frame is open, plain, softly lit background. The bottom third is a
 clean, empty, uncluttered surface with nothing on it. Few props, kept close beside the product, generous
-space between every object, nothing stacked, crowded or cut off at the edges. All fabric, packaging and
-surfaces are plain, blank and unbranded. Realistic commercial studio photography, natural lighting, sharp focus,
+space between every object, nothing stacked, crowded or cut off at the edges. Packaging, props and
+surfaces are plain and unbranded; any graphic on the product itself is abstract shapes and colour only. Realistic commercial studio photography, natural lighting, sharp focus,
 calm and tidy minimal composition."""
 
 
@@ -364,38 +423,60 @@ INSPECT_QUESTION = (
 )
 
 
-def inspect_image(image_bytes):
+def inspect_image(image_bytes, subject=None):
     """Vision check of a generated photo; None when the check itself is unavailable."""
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB").resize((512, 512))
     buf = io.BytesIO()
     image.save(buf, format="JPEG", quality=85)
     data_url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    question = INSPECT_QUESTION
+    if subject:
+        question = question[:-1] + (f', "subject_matches" (true if the main subject is clearly '
+                                    f'recognisable as a {subject}).')
     try:
         reply = cloudflare_chat(VISION_MODEL, [
-            {"type": "text", "text": INSPECT_QUESTION},
+            {"type": "text", "text": question},
             {"type": "image_url", "image_url": {"url": data_url}},
         ], max_tokens=120, temperature=0, timeout=40)
         verdict = json.loads(re.search(r"\{.*\}", reply, re.DOTALL).group(0))
     except (requests.exceptions.RequestException, RuntimeError, AttributeError, ValueError):
         return None
     return {k: bool(verdict.get(k, d)) for k, d in
-            (("lettering", False), ("top_clear", True), ("bottom_clear", True), ("cluttered", False))}
+            (("lettering", False), ("top_clear", True), ("bottom_clear", True), ("cluttered", False),
+             ("subject_matches", True))}
+
+
+def _fills_frame(image_bytes):
+    """True when the product spans so much of the height that text must cover it."""
+    image = ImageOps.fit(Image.open(io.BytesIO(image_bytes)).convert("RGB"), (POSTER_W, POSTER_H))
+    span = subject_span(image)
+    return bool(span) and POSTER_H - (span[1] - span[0]) < MIN_TEXT_ROOM
 
 
 def _problems(verdict):
     """(must retry, penalty) for an inspected image.
 
-    Lettering and clutter force a retry. Blocked top/bottom areas only break
-    ties, since poster.py moves the text around the product anyway.
+    Lettering, the wrong product, clutter and a product that fills the frame
+    force a retry. Blocked top/bottom areas only break ties, since poster.py
+    moves the text around the product anyway.
     """
     if verdict is None:
         return False, 0
-    serious = 4 * verdict["lettering"] + 2 * verdict["cluttered"]
-    return serious > 0, serious + (not verdict["top_clear"]) + (not verdict["bottom_clear"])
+    serious = (4 * verdict.get("lettering", False) + 4 * (not verdict.get("subject_matches", True))
+               + 2 * verdict.get("cluttered", False) + 2 * verdict.get("fills_frame", False))
+    return serious > 0, serious + (not verdict.get("top_clear", True)) + (not verdict.get("bottom_clear", True))
 
 
-def generate_clean_image(image_prompt):
-    """Generate, inspect and retry until a photo has no lettering and room for the text.
+def product_subject(retrieved):
+    """'Walking Shoes (footwear)': what the photo's main subject must be."""
+    fields = dict(part.split(": ", 1) for part in _product_brief(retrieved).split("; ") if ": " in part)
+    name = fields.get("product_name", "")
+    return f"{name} ({fields['category'].lower()})" if name and fields.get("category") else name
+
+
+def generate_clean_image(image_prompt, subject=None):
+    """Generate, inspect and retry until a photo shows the product, has no
+    lettering and leaves room for the text.
 
     Returns (image bytes, verdict, attempts). Keeps the best attempt if none is perfect.
     """
@@ -405,7 +486,9 @@ def generate_clean_image(image_prompt):
             image_prompt, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN,
             seed=int.from_bytes(os.urandom(3), "big"),
         )
-        verdict = inspect_image(image_bytes)
+        verdict = inspect_image(image_bytes, subject)
+        if verdict is not None:   # the layout check is local, so only add it to a real verdict
+            verdict["fills_frame"] = _fills_frame(image_bytes)
         if best is None or _problems(verdict)[1] < _problems(best[1])[1]:
             best = (image_bytes, verdict, attempt)
         if not _problems(verdict)[0]:
@@ -466,22 +549,65 @@ def row_to_text(row, kind):
     return " | ".join(parts)
 
 
+# What a shopper would describe. Ids, restrictions and data-status notes are
+# kept in the prompt context but only add noise to the search text.
+SEARCH_FIELDS = ("product_name", "category", "description", "materials", "features",
+                 "target_audience", "available_colours")
+
+
+def search_text(row, kind):
+    """Text a record is searched by (the prompt still gets the full row_to_text)."""
+    if kind != "product":
+        return row_to_text(row, kind)
+    return " | ".join(f"{k}: {row[k]}" for k in SEARCH_FIELDS if str(row.get(k, "")).strip())
+
+
+def _tokens(text):
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+@lru_cache(maxsize=4)
+def _bm25_index(docs):
+    """Per-document term counts and lengths, document frequencies, average length."""
+    toks = [_tokens(d) for d in docs]
+    df = Counter(w for t in toks for w in set(t))
+    return [(Counter(t), len(t)) for t in toks], df, sum(map(len, toks)) / max(len(toks), 1)
+
+
+def bm25_scores(docs, query, k1=1.2, b=0.75):
+    """Okapi BM25 keyword scores; catches exact material and category words embeddings blur."""
+    index, df, avg = _bm25_index(tuple(docs))
+    terms = set(_tokens(query))
+    scores = np.zeros(len(docs))
+    for i, (tf, length) in enumerate(index):
+        for w in terms & tf.keys():
+            idf = np.log(1 + (len(docs) - df[w] + 0.5) / (df[w] + 0.5))
+            scores[i] += idf * tf[w] * (k1 + 1) / (tf[w] + k1 * (1 - b + b * length / avg))
+    return scores
+
+
 def retrieve_context(user_prompt, products, guidelines, top_k=6):
+    """Hybrid search: embeddinggemma vectors and BM25, merged by reciprocal rank fusion."""
     records = []
     for _, row in products.iterrows():
         records.append({
             "source_id": f"products:{row.get('product_id', 'unknown')}",
             "kind": "product",
             "text": row_to_text(row, "product"),
+            "search": search_text(row, "product"),
+            "title": str(row.get("product_name", "")).strip() or "none",
         })
     for _, row in guidelines.iterrows():
         records.append({
             "source_id": f"guidelines:{row.get('guideline_id', 'unknown')}",
             "kind": "guideline",
             "text": row_to_text(row, "guideline"),
+            "search": search_text(row, "guideline"),
+            "title": "none",
         })
 
-    texts = tuple(r["text"] for r in records)
+    # embeddinggemma is trained with these task prompts; plain text loses accuracy.
+    texts = tuple(f"title: {r['title']} | text: {r['search']}" for r in records)
 
     # Catalogue vectors come from the on-disk cache. Only the user's
     # query is embedded on each request, instead of re-embedding every CSV row.
@@ -489,7 +615,8 @@ def retrieve_context(user_prompt, products, guidelines, top_k=6):
         cached_ollama_embed_texts(texts, EMBED_MODEL, OLLAMA_BASE_URL),
         dtype=np.float32,
     )
-    query_vector = np.array(ollama_embed([user_prompt])[0], dtype=np.float32)
+    query_vector = np.array(ollama_embed([f"task: search result | query: {user_prompt}"])[0],
+                            dtype=np.float32)
 
     # Ollama embedding models typically return normalized vectors; normalize defensively.
     doc_norms = np.linalg.norm(doc_vectors, axis=1, keepdims=True)
@@ -497,11 +624,14 @@ def retrieve_context(user_prompt, products, guidelines, top_k=6):
     doc_vectors = doc_vectors / np.maximum(doc_norms, 1e-12)
     query_vector = query_vector / max(query_norm, 1e-12)
     scores = doc_vectors @ query_vector
-    ranked = np.argsort(scores)[::-1][:min(top_k, len(records))]
+    dense_rank = np.argsort(-scores).argsort()
+    keyword_rank = np.argsort(-bm25_scores([r["search"] for r in records], user_prompt)).argsort()
+    fused = 1 / (60 + dense_rank) + 1 / (60 + keyword_rank)
+    ranked = np.argsort(-fused)[:min(top_k, len(records))]
     selected = []
     for idx in ranked:
-        item = dict(records[int(idx)])
-        item["score"] = float(scores[int(idx)])
+        item = {k: v for k, v in records[int(idx)].items() if k not in ("search", "title")}
+        item["score"] = float(scores[int(idx)])   # cosine similarity, shown in the UI
         selected.append(item)
 
     # Always include every mandatory guideline. Semantic retrieval alone must not
@@ -553,7 +683,7 @@ HEADLINE:
 (at most 8 words)
 
 AD COPY:
-(1-2 sentences, 15-30 words; it is set on the poster, so keep it tight)
+(1-2 sentences, 18-26 words in total; fewer than 15 words is too short)
 
 CALL TO ACTION:
 (2-4 words)
@@ -750,6 +880,11 @@ def warm_retrieval():
         pass   # Ollama not running yet; the first real request will report it
 
 
+# Changes on every server start so the browser drops the advertisement it
+# remembered from a previous run instead of reopening it forever.
+BOOT_ID = uuid.uuid4().hex
+
+
 @app.get("/api/config")
 def get_config():
     cloudflare_ready = bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN)
@@ -760,6 +895,7 @@ def get_config():
         "cloudflare_ready": cloudflare_ready,
         "example_prompt": EXAMPLE_PROMPT,
         "knowledge_sources": ["data/products.csv", "data/company_guidelines.csv"],
+        "boot_id": BOOT_ID,
     }
 
 
@@ -770,6 +906,24 @@ def get_catalogue():
     except Exception as exc:
         raise HTTPException(500, f"Could not load CSV knowledge files: {exc}")
     return {"products": _records(products), "guidelines": _records(guidelines)}
+
+
+@app.post("/api/transcribe")
+async def transcribe(file: UploadFile = File(...)):
+    if not (CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN):
+        raise HTTPException(503, "Voice briefs need Cloudflare credentials in .env.")
+    audio = await file.read(MAX_DICTATION_BYTES + 1)
+    if not audio:
+        raise HTTPException(400, "No audio was recorded.")
+    if len(audio) > MAX_DICTATION_BYTES:
+        raise HTTPException(413, "Recording is too long. Keep voice briefs under a minute.")
+    try:
+        text = cloudflare_transcribe(audio)
+    except requests.exceptions.RequestException as exc:
+        raise _bad_gateway(exc, "Cloudflare")
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+    return {"text": text}
 
 
 @app.post("/api/generate")
@@ -847,7 +1001,8 @@ def generate_image(gid: str):
         # Two separate processes: the image model only ever sees a plain scene
         # description, and the words are typeset afterwards by poster.py.
         scene = describe_scene(gen)
-        image_bytes, verdict, attempts = generate_clean_image(build_image_prompt(scene))
+        image_bytes, verdict, attempts = generate_clean_image(
+            build_image_prompt(scene), product_subject(gen["retrieved"]))
         design = _design(gen, image_bytes, texts)   # also fails early if the image is unusable
     except ValueError as exc:
         raise HTTPException(400, str(exc))

@@ -45,11 +45,31 @@ STOPWORDS = {"do", "not", "claim", "or", "and", "the", "a", "an", "any", "of", "
              "specified", "in", "sample", "catalogue", "properties", "performance", "is", "are", "be"}
 
 
+class QuotaError(RuntimeError):
+    """Cloudflare quota ran out mid-run: the section would measure the wrong system."""
+
+
+def check_quota(text):
+    if "429" in text or "daily free allocation" in text:
+        raise QuotaError("Cloudflare daily quota is used up (resets 00:00 UTC).")
+
+
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
 def pct(values):
     return round(100 * sum(values) / len(values), 1) if values else None
+
+
+def wilson(values, z=1.96):
+    """95% Wilson score interval (in %) for a list of booleans; sound for small n."""
+    values = [bool(v) for v in values if v is not None]
+    if not values:
+        return None
+    n, p = len(values), sum(values) / len(values)
+    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / (1 + z * z / n)
+    return [round(100 * max(0, centre - half), 1), round(100 * min(1, centre + half), 1)]
 
 
 def latency(values):
@@ -116,6 +136,7 @@ def eval_retrieval(top_k=6):
     def summary(ranks):
         return {"queries": len(ranks),
                 "hit@1_%": pct([r == 1 for r in ranks]),
+                "hit@1_95ci": wilson([r == 1 for r in ranks]),
                 "hit@3_%": pct([r is not None and r <= 3 for r in ranks]),
                 f"recall@{top_k}_%": pct([r is not None for r in ranks]),
                 "mrr": round(statistics.mean([1 / r if r else 0 for r in ranks]), 3)}
@@ -125,7 +146,9 @@ def eval_retrieval(top_k=6):
         "named_product_queries": summary(by_type["named"]),
         "descriptive_queries_no_product_name": summary(by_type["descriptive"]),
         "all_queries": summary(by_type["named"] + by_type["descriptive"]),
-        "mandatory_guideline_coverage_%": pct(coverage),
+        # retrieve_context always appends mandatory guidelines, so this is a
+        # design guarantee checked here, not a measured retrieval result.
+        "mandatory_guideline_coverage_%_by_design": pct(coverage),
         "query_latency": latency(times),
     }
 
@@ -151,8 +174,13 @@ def eval_generation(n, seed):
         try:
             output, model = A.generate_brief(A.build_generation_prompt(prompt, retrieved))
         except Exception as exc:   # counted as a failure, not a crash
+            check_quota(str(exc))
             results.append({"product": row["product_name"], "error": str(exc)[:200]})
             continue
+        if model == A.CHAT_MODEL and A.CLOUDFLARE_ACCOUNT_ID:
+            # Every Cloudflare writer failed (usually quota), so the local backup
+            # model wrote this brief; its numbers would not describe the system.
+            raise QuotaError(f"Writer fell back to local {model}; Cloudflare quota is probably used up.")
         writer_t.append(time.perf_counter() - t)
         models.append(model)
         s = A.parse_ad_sections(output)
@@ -198,6 +226,11 @@ def eval_generation(n, seed):
         "cites_target_product_%": pct([r["cites_product"] for r in ok]),
         "type_style_valid_%": pct([r["type_style_valid"] for r in ok]),
         "writer_fallback_rate_%": pct([m not in A.CLOUDFLARE_TEXT_MODELS[:1] for m in models]),
+        "ci_95": {"format": wilson([r["all_sections"] for r in ok]),
+                  "copy_15_30": wilson([r["copy_ok"] for r in ok]),
+                  "price_accuracy": wilson(priced),
+                  "invented_offer": wilson([r["invented_offer"] for r in ok]),
+                  "restricted_claim": wilson([bool(r["restricted_mentions"]) for r in ok])},
         "writer_latency": latency(writer_t),
         "flagged_for_review": [{"product": r["product"], "restricted": r["restricted_mentions"]}
                                for r in ok if r["restricted_mentions"] or r["invented_offer"]],
@@ -256,12 +289,14 @@ def eval_images(n, seed):
             gen = {"id": uuid.uuid4().hex, "prompt": prompt, "ad_output": output, "retrieved": retrieved}
             t = time.perf_counter()
             scene = A.describe_scene(gen)
-            image_bytes, verdict, attempts = A.generate_clean_image(A.build_image_prompt(scene))
+            image_bytes, verdict, attempts = A.generate_clean_image(
+                A.build_image_prompt(scene), A.product_subject(retrieved))
             design = A._design(gen, image_bytes)
             step_t.append(time.perf_counter() - t)
             fidelity = ask_vision(image_bytes, f"Is the main subject of this photo a {row['product_name']} "
                                                f"({row['category'].lower()})? Answer yes or no.")
         except Exception as exc:
+            check_quota(str(exc))
             rows.append({"product": row["product_name"], "error": str(exc)[:200]})
             continue
 
@@ -296,6 +331,10 @@ def eval_images(n, seed):
         "wcag_copy_AA_4.5:1_%": pct([r["copy_contrast"] >= 4.5 for r in ok]),
         "contrast_median": {"headline": statistics.median([r["headline_contrast"] for r in ok]) if ok else None,
                             "copy": statistics.median([r["copy_contrast"] for r in ok]) if ok else None},
+        "ci_95": {"lettering_free": wilson([r["lettering_free"] for r in ok]),
+                  "product_fidelity": wilson([r["product_fidelity"] for r in ok]),
+                  "first_try": wilson([r["attempts"] == 1 for r in ok]),
+                  "text_product_overlap": wilson([r["text_overlaps_product"] for r in ok])},
         "font_pairing_uniqueness_%": round(100 * len(set(pairs)) / len(pairs), 1) if pairs else None,
         "image_step_latency": latency(step_t),
         "per_poster": rows,
@@ -317,6 +356,7 @@ def eval_review():
     return {
         "decisions": len(records),
         "approval_rate_%": pct([r["decision"] == "approved" for r in records]),
+        "approval_95ci": wilson([r["decision"] == "approved" for r in records]),
         "text_edit_rate_%": pct([r["text_edited"] for r in records]),
         "approved_without_edits_%": pct([r["decision"] == "approved" and not r["text_edited"] for r in records]),
         "review_time_s": {"median": statistics.median(seconds), "mean": round(statistics.mean(seconds), 1)},
@@ -360,16 +400,25 @@ def main():
     runners = {"retrieval": eval_retrieval, "review": eval_review,
                "generation": lambda: eval_generation(args.n, args.seed),
                "images": lambda: eval_images(args.images, args.seed)}
+    failed = []
     for section in args.sections:
         print(f"Evaluating {section}...", file=sys.stderr, flush=True)
-        metrics[section] = runners[section]()
+        try:
+            metrics[section] = runners[section]()
+        except QuotaError as exc:   # keep the earlier, valid numbers for this section
+            print(f"Skipped {section}: {exc} Earlier results kept.", file=sys.stderr, flush=True)
+            failed.append(section)
+            continue
         metrics[section]["evaluated_at"] = time.strftime("%Y-%m-%d %H:%M")
     metrics["run_at"] = time.strftime("%Y-%m-%d %H:%M")
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(metrics, fh, indent=2, ensure_ascii=False)
     with open(os.path.join(OUT_DIR, "metrics.md"), "w", encoding="utf-8") as fh:
         fh.write(to_markdown(metrics))
-    print(json.dumps({k: v for k, v in metrics.items() if k in args.sections}, indent=2, ensure_ascii=False))
+    print(json.dumps({k: v for k, v in metrics.items() if k in args.sections and k not in failed},
+                     indent=2, ensure_ascii=False))
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

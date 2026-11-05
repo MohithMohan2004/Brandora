@@ -36,6 +36,11 @@ export const api = {
     form.append("file", file);
     return request("/fonts", { method: "POST", body: form }).then((r) => r.json());
   },
+  transcribe: (wav) => {
+    const form = new FormData();
+    form.append("file", wav, "brief.wav");
+    return request("/transcribe", { method: "POST", body: form }).then((r) => r.json());
+  },
   speech: (id, text) => request(`/generations/${id}/speech`, json({ text })).then((r) => r.blob()),
   autoLayoutUrl: (id, download = false) => `/api/generations/${id}/auto-layout.png${download ? "?download=true" : ""}`,
   downloadUrl: (id) => `/api/generations/${id}/poster/download.png`,

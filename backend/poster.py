@@ -17,6 +17,7 @@ import threading
 from datetime import datetime
 from functools import lru_cache
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 import typography
@@ -377,6 +378,7 @@ def design_colors(image):
         "button": accent, "button_text": button_text,
         "shadow_headline": _luminance(head_ink) > 0.5,
         "shadow_copy": _luminance(copy_ink) > 0.5,
+        "dominant": dominant,
     }
 
 
@@ -393,34 +395,30 @@ def _fit(text, path, wght, max_w, max_h, max_lines, start, smallest, spacing):
 def subject_span(image):
     """(top, bottom) in px of the rows holding the product, or None.
 
-    A backdrop, table edge or horizon is roughly one colour across its row,
-    while the product stands out from the rest of the row it sits in. Rows
-    with many such standout pixels are where the product is; text stays out.
+    Every row an object covers has its crisp left and right outline in it. A
+    table edge or horizon only changes from top to bottom, and a spotlight or
+    vignette changes too gradually to count, so rows with sharp left/right
+    steps are where the product is; text stays out.
     """
-    small = image.resize((120, 120), Image.Resampling.BILINEAR).filter(ImageFilter.GaussianBlur(1))
-    px = small.load()
-    rows = []
-    for y in range(120):
-        line = [px[x, y] for x in range(120)]
-        med = [sorted(c[i] for c in line)[60] for i in range(3)]
-        rows.append(sum(
-            sum((c[i] - med[i]) ** 2 for i in range(3)) > 40 ** 2 for c in line
-        ) / 120)
-    peak = max(rows)
-    if peak < 0.03:
+    n = 360
+    gray = np.asarray(image.resize((n, n), Image.Resampling.BOX).convert("L"), dtype=np.float32)
+    sharp = np.abs(gray[:, 2:] - gray[:, :-2]) > 12
+    rows = np.convolve(sharp.mean(axis=1), np.ones(9) / 9, mode="same")
+    peak = rows.max()
+    if peak < 0.004:
         return None
-    hot = [y for y, v in enumerate(rows) if v > max(0.03, 0.25 * peak)]
+    hot = np.flatnonzero(rows > max(0.004, 0.2 * peak))
     # Merge into runs (gaps under 5% of the height); keep the run with most mass.
     runs, start, prev = [], hot[0], hot[0]
     for y in hot[1:]:
-        if y - prev > 6:
+        if y - prev > 18:
             runs.append((start, prev))
             start = y
         prev = y
     runs.append((start, prev))
-    top, bottom = max(runs, key=lambda r: sum(rows[r[0]:r[1] + 1]))
-    scale = H / 120
-    return int(top * scale), int((bottom + 1) * scale)
+    top, bottom = max(runs, key=lambda r: rows[r[0]:r[1] + 1].sum())
+    scale, margin = H / n, 15   # margin: thin tips (a mannequin neck) barely register
+    return max(0, int(top * scale) - margin), min(H, int((bottom + 1) * scale) + margin)
 
 
 def covers_text(family, weight, text):
@@ -466,32 +464,51 @@ def design_poster(base_bytes, texts, pairing):
 
     # Keep the text clear of the product: headline above it, copy below it (or
     # under the headline when there is no room below), button at the bottom.
+    # When the product reaches the top of the frame, the headline moves into
+    # the free space below it instead of being printed over it.
     subj_top, subj_bottom = subject_span(image) or (H // 3, 2 * H // 3)
     gap, top_margin = 18, 44
-
-    path, wght = fonts[head["font"]]
-    head_room = max(110, min(230, subj_top - gap - top_margin))
-    head["size"], lines, _ = _fit(head["text"], path, wght, head["width"] / 100 * W,
-                                  head_room, 3, 96, 34, head_spacing)
-    head_h = head["size"] * head_spacing * lines
-    head["y"] = round((top_margin + head_h / 2) / H * 100, 2)
 
     path, wght = fonts[cta["font"]]
     cta["size"], _, _ = _fit(cta["text"], path, wght, 700, 60, 1, 30, 18, 1.0)
     cta_top = cta["y"] / 100 * H - (cta["size"] + 2 * pad * 0.6) / 2
 
-    path, wght = fonts[copy["font"]]
-    fit_copy = lambda room: _fit(copy["text"], path, wght, copy["width"] / 100 * W,
+    path, wght = fonts[head["font"]]
+    fit_head = lambda room: _fit(head["text"], path, wght, head["width"] / 100 * W,
+                                 room, 3, 96, 34, head_spacing)
+    cpath, cwght = fonts[copy["font"]]
+    fit_copy = lambda room: _fit(copy["text"], cpath, cwght, copy["width"] / 100 * W,
                                  room, 9, 34, 20, copy["line_spacing"])
-    below = cta_top - gap - (subj_bottom + gap)
-    above = subj_top - gap - (top_margin + head_h + gap)
+    top_free = subj_top - gap - top_margin
+    bottom_start = subj_bottom + gap
+    head["size"], lines, fits = fit_head(min(230, top_free))
+    head_top = top_margin
+    if not fits:
+        # Below the product only if the copy still fits under it (or above it).
+        low_size, low_lines, low_fits = fit_head(min(230, cta_top - gap - bottom_start))
+        low_h = low_size * head_spacing * low_lines
+        copy_room = cta_top - gap - (bottom_start + low_h + gap)
+        if low_fits and (fit_copy(copy_room)[2] or fit_copy(top_free)[2]):
+            head["size"], lines, head_top = low_size, low_lines, bottom_start
+        else:   # no clear space for it anywhere: top of the frame, outlined if needed
+            head["size"], lines, _ = fit_head(max(110, min(230, top_free)))
+    head_h = head["size"] * head_spacing * lines
+    head["y"] = round((head_top + head_h / 2) / H * 100, 2)
+    head_below = head_top != top_margin
+    if head_below:   # headline already sits under the product; copy follows it
+        below = cta_top - gap - (head_top + head_h + gap)
+        above = top_free
+    else:
+        below = cta_top - gap - bottom_start
+        above = subj_top - gap - (top_margin + head_h + gap)
     size, lines, fits = fit_copy(below)
     if fits:
         copy_bottom = cta_top - gap
     else:
         size, lines, fits = fit_copy(above)
         if fits:
-            copy_bottom = top_margin + head_h + gap + size * copy["line_spacing"] * lines
+            copy_bottom = subj_top - gap if head_below else \
+                top_margin + head_h + gap + size * copy["line_spacing"] * lines
         else:   # no clear space anywhere: sit above the button, outlined if needed
             size, lines, _ = fit_copy(250)
             copy_bottom = cta_top - gap
@@ -500,8 +517,19 @@ def design_poster(base_bytes, texts, pairing):
     copy_top = copy_bottom - copy_h
     copy["y"] = round((copy_top + copy_h / 2) / H * 100, 2)
 
+    # Inks were picked for the top and bottom strips; a block moved elsewhere
+    # gets the ink that reads best on what is actually behind it.
+    if head_below:
+        colors["headline"] = _ink_for(_region_color(
+            image, (60, int(head_top), W - 60, int(head_top + head_h))), colors["dominant"])
+        head.update(color=_hex(colors["headline"]), shadow=_luminance(colors["headline"]) > 0.5)
+    if copy_bottom < cta_top - gap:
+        colors["copy"] = _ink_for(_region_color(
+            image, (90, int(copy_top), W - 90, int(copy_bottom))), colors["dominant"])
+        copy.update(color=_hex(colors["copy"]), shadow=_luminance(colors["copy"]) > 0.5)
+
     # The default band is faint, so check what actually sits behind each block.
-    head.update(_halo(image, (60, top_margin, W - 60, int(top_margin + head_h)), colors["headline"]))
+    head.update(_halo(image, (60, int(head_top), W - 60, int(head_top + head_h)), colors["headline"]))
     copy.update(_halo(image, (90, int(copy_top), W - 90, int(copy_bottom)), colors["copy"]))
 
     scrim = dict(SCRIM_DEFAULTS, color=_hex(colors["band"]))

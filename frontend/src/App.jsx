@@ -18,7 +18,8 @@ const HEADINGS = {
   evidence: ["Evidence", "The exact records Brandora retrieved, plus the full catalogue and guidelines it works from."],
 };
 
-// The open advertisement is remembered so a reload (or a server restart) brings it back.
+// The open advertisement is remembered so a page reload brings it back. It is tied to the
+// server's boot_id, so restarting the app starts from a clean brief.
 const SESSION_KEY = "brandora.session";
 const readSession = () => {
   try { return JSON.parse(localStorage.getItem(SESSION_KEY)) || null; } catch { return null; }
@@ -41,23 +42,41 @@ export default function App() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api.config().then((c) => { setConfig(c); setPrompt((p) => p || c.example_prompt); }).catch((e) => setError(e.message));
     api.catalogue().then(setCatalogue).catch((e) => setError(e.message));
-
-    const session = readSession();
-    if (session?.id) {
-      api.generation(session.id)
-        .then((result) => {
-          setGen(result);
-          setPrompt(result.prompt);
-          openEditor(result.editor);
-          setView(session.view === "poster" || session.view === "ad" ? session.view : "ad");
-        })
-        .catch(() => writeSession(null));
-    }
+    api.config()
+      .then((c) => {
+        setConfig(c);
+        const session = readSession();
+        if (!session?.id || session.boot !== c.boot_id) {
+          writeSession(null);
+          setPrompt((p) => p || c.example_prompt);
+          return;
+        }
+        api.generation(session.id)
+          .then((result) => {
+            setGen(result);
+            setPrompt(result.prompt);
+            openEditor(result.editor);
+            setView(session.view === "poster" || session.view === "ad" ? session.view : "ad");
+          })
+          .catch(() => { writeSession(null); setPrompt((p) => p || c.example_prompt); });
+      })
+      .catch((e) => setError(e.message));
   }, []);
 
-  useEffect(() => { if (gen) writeSession({ id: gen.id, view }); }, [gen, view]);
+  useEffect(() => {
+    if (gen && config) writeSession({ id: gen.id, view, boot: config.boot_id });
+  }, [gen, view, config]);
+
+  const startOver = () => {
+    if (unsaved && !window.confirm("Discard unsaved poster changes and start a new brief?")) return;
+    writeSession(null);
+    setGen(null);
+    openEditor(null);
+    setPrompt("");
+    setError("");
+    setView("brief");
+  };
 
   const openEditor = (next) => {
     setEditor(next);
@@ -140,6 +159,12 @@ export default function App() {
             </button>
           </li>
         </ol>
+
+        {gen && (
+          <button className="btn sm block" style={{ marginTop: 16 }} onClick={startOver} disabled={Boolean(busy)}>
+            New brief
+          </button>
+        )}
 
         {config && (
           <div className="rail-foot">
