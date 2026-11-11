@@ -1,0 +1,8 @@
+<resources>
+    <!-- Dark parent: the WebView reports prefers-color-scheme: dark, so Auto follows the phone. -->
+    <style name="Theme.Brandora" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Brandora server runs on the user's own computer over plain http on the
+     local network (start.sh with the lan option), so cleartext must be allowed. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

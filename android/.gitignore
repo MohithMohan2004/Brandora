@@ -1,0 +1,7 @@
+.gradle/
+build/
+app/build/
+local.properties
+# copied from frontend/dist at build time
+app/src/main/assets/www/
+*.apk
