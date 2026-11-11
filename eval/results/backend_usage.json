@@ -1,0 +1,44 @@
+{
+  "_meta": {
+    "git_commit": "40d1b3a",
+    "seed": 20241105
+  },
+  "production_saved_generations": {
+    "source": "backend/generations/*/gen.json (field writer_model)",
+    "total_files": 13,
+    "cloudflare": 8,
+    "ollama": 5,
+    "unknown": 0,
+    "per_model": {
+      "@cf/meta/llama-3.3-70b-instruct-fp8-fast": 8,
+      "llama3.2:3b": 5
+    },
+    "caveat": "the app keeps at most 60 generations on disk and prunes older ones, so earlier production generations are not in the logs; their count is unknown."
+  },
+  "earlier_pilot_eval_generation": {
+    "source": "eval_results/metrics.json (generation section, run 2026-11-05)",
+    "briefs": 15,
+    "writer_fallback_rate_%": 0.0,
+    "interpretation": "fallback rate is the share NOT written by the first Cloudflare writer model; 0.0 means all 15 briefs were written by that Cloudflare model. Per-brief model names were not saved.",
+    "cloudflare": 15,
+    "ollama": 0,
+    "unknown": 0
+  },
+  "review_log_decisions": {
+    "source": "backend/review_log.jsonl",
+    "decisions": 7,
+    "backend_recorded": false,
+    "unknown": 7,
+    "note": "the log stores decision, brief and texts but not the writer model"
+  },
+  "benchmark_runs": {
+    "source": "eval/runs/*.jsonl (backend and model recorded per row)",
+    "by_config": {
+      "B0": {
+        "('ollama', 'llama3.2:3b')": 1,
+        "errors": 0
+      }
+    },
+    "note": "forced to local Ollama by run_benchmark.py; not production traffic"
+  }
+}

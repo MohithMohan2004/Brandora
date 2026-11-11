@@ -1,0 +1,37 @@
+{
+  "_meta": {
+    "git_commit": "40d1b3a",
+    "seed": 20241105,
+    "inputs": [
+      "/home/mohith/Projects/brandora/backend/review_log.jsonl"
+    ]
+  },
+  "files": 1,
+  "decisions": 7,
+  "malformed_lines_skipped": 0,
+  "approved": "5/7 = 71.4%",
+  "approved_95ci": [
+    35.9,
+    91.8
+  ],
+  "text_edited": "2/7 = 28.6%",
+  "text_edited_95ci": [
+    8.2,
+    64.1
+  ],
+  "approved_without_edits": "3/7 = 42.9%",
+  "approved_without_edits_95ci": [
+    15.8,
+    75.0
+  ],
+  "review_seconds_median": 78.4,
+  "review_seconds_mean": 138.5,
+  "review_seconds_n": 7,
+  "ned_edited_n": 2,
+  "ned_mean": 0.719,
+  "ned_median": 0.719,
+  "ned_each": [
+    0.529,
+    0.908
+  ]
+}

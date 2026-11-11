@@ -1,0 +1,71 @@
+{
+  "_note": "Case-insensitive regular expressions. Edit here, not in checker.py. Each list is reported under the check named by its key.",
+  "discount": [
+    "\\b\\d+\\s*%\\s*(?:off|discount|savings?|cashback)\\b",
+    "\\b(?:flat|upto|up to)\\s*\\d+\\s*%",
+    "\\bdiscount(?:s|ed)?\\b",
+    "\\bon sale\\b",
+    "\\b(?:flash|festive|clearance|launch|season|summer|winter|diwali|end[- ]of[- ]season)\\s+sale\\b",
+    "\\bsale\\b",
+    "\\bbuy\\s*(?:one|1)\\s*,?\\s*get\\s*(?:one|1)\\b",
+    "\\bbogo\\b",
+    "\\b(?:special|exclusive|limited[- ]time|launch|festive|introductory|welcome|bundle)\\s+(?:offer|deal|price|pricing)s?\\b",
+    "\\boffer\\s+(?:ends|valid|expires)\\b",
+    "\\b(?:deal|deals)\\b",
+    "\\bsave\\s+(?:₹|rs\\.?|inr)?\\s*\\d+",
+    "\\b(?:price drop|markdown|reduced price|cashback|freebie)\\b",
+    "\\bat\\s+(?:₹|rs\\.?|inr)\\s*[\\d,]+\\s+(?:only|instead)\\b"
+  ],
+  "coupon": [
+    "\\bcoupon(?:s)?\\b",
+    "\\b(?:promo|discount|voucher|referral)\\s+code\\b",
+    "\\buse\\s+code\\b",
+    "\\bvoucher(?:s)?\\b",
+    "\\bcode\\s*[:\\-]?\\s*[A-Z0-9]{4,}\\b"
+  ],
+  "free_shipping": [
+    "\\bfree\\s+(?:shipping|delivery|returns?)\\b",
+    "\\bships?\\s+free\\b",
+    "\\bzero\\s+(?:shipping|delivery)\\s+(?:fee|charge)s?\\b"
+  ],
+  "urgency": [
+    "\\bhurry\\b",
+    "\\blast\\s+chance\\b",
+    "\\b(?:ends|ending)\\s+(?:today|tonight|soon|tomorrow|this\\s+\\w+)\\b",
+    "\\btoday\\s+only\\b",
+    "\\bonly\\s+\\d+\\s+(?:left|remaining|pieces?|units?)\\b",
+    "\\bwhile\\s+(?:stocks?|supplies)\\s+last\\b",
+    "\\b(?:don'?t|do not)\\s+miss\\b",
+    "\\blimited[- ](?:time|stock|edition|period|run|units|quantity|availability)\\b",
+    "\\bact\\s+(?:now|fast)\\b",
+    "\\bselling\\s+(?:out|fast)\\b",
+    "\\brunning\\s+out\\b",
+    "\\bgrab\\s+(?:yours|it|them)\\s+(?:now|before|today)\\b",
+    "\\bbefore\\s+(?:it'?s|they'?re)\\s+gone\\b",
+    "\\bcountdown\\b",
+    "\\bwhile\\s+it\\s+lasts\\b",
+    "\\bnow\\s+or\\s+never\\b",
+    "\\bexclusive\\s+access\\b",
+    "\\bhurry\\s+up\\b"
+  ],
+  "environmental": [
+    "\\beco[- ]?(?:friendly|conscious|responsible|safe|positive)\\b",
+    "\\beco\\b",
+    "\\bsustainab(?:le|ly|ility)\\b",
+    "\\borganic\\b",
+    "\\bgreen(?:er)?\\b",
+    "\\bbiodegradable\\b",
+    "\\brecycled\\b",
+    "\\brecyclable\\b",
+    "\\bupcycled\\b",
+    "\\bcarbon[- ](?:neutral|negative|positive|free)\\b",
+    "\\bplanet[- ]friendly\\b",
+    "\\bethically\\s+(?:sourced|made)\\b",
+    "\\benvironment(?:ally)?[- ]?(?:friendly|conscious|responsible|safe)?\\b",
+    "\\bplastic[- ]free\\b",
+    "\\bzero[- ]waste\\b",
+    "\\bvegan\\b",
+    "\\bcruelty[- ]free\\b",
+    "\\bnatural(?:ly)?[- ]sourced\\b"
+  ]
+}

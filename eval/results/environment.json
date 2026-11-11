@@ -1,0 +1,16 @@
+{
+  "_meta": {
+    "git_commit": "40d1b3a",
+    "seed": 20241105
+  },
+  "cpu": "Intel(R) Core(TM) i5-10210U CPU @ 1.60GHz",
+  "logical_cpus": 8,
+  "gpu": "none detected (nvidia-smi absent)",
+  "ram_gb": 15.5,
+  "os": "Linux-6.14.0-37-generic-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "ollama_version": "ollama version is 0.40.11",
+  "writer_model": "llama3.2:3b",
+  "embed_model": "embeddinggemma",
+  "image_model": "@cf/black-forest-labs/flux-2-klein-9b"
+}
