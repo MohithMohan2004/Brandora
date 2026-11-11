@@ -4,10 +4,13 @@
 # then FastAPI serves both the UI and the API on http://localhost:8000.
 #
 #   ./start.sh         normal use
+#   ./start.sh --lan   also reachable from phones on the same Wi-Fi (the Android app)
 #   ./start.sh --dev   live reload while coding (UI on http://localhost:5173)
 set -euo pipefail
 cd "$(dirname "$0")"
 PORT=8000
+HOST=127.0.0.1
+[ "${1:-}" = "--lan" ] && HOST=0.0.0.0
 
 # Python environment
 [ -x venv/bin/python ] || python3 -m venv venv
@@ -43,4 +46,9 @@ if [ ! -f frontend/dist/index.html ] ||
 fi
 
 echo "Brandora is starting on http://localhost:$PORT"
-exec venv/bin/uvicorn app:app --app-dir backend --port "$PORT"
+if [ "$HOST" = 0.0.0.0 ]; then
+  LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+  echo "Phones on this Wi-Fi: enter http://${LAN_IP:-YOUR-PC-IP}:$PORT in the Brandora app."
+  echo "Anyone on this network can use the app (and your Cloudflare quota) while it runs."
+fi
+exec venv/bin/uvicorn app:app --app-dir backend --host "$HOST" --port "$PORT"

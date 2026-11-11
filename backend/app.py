@@ -34,6 +34,7 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
+import relevance
 import typography
 from poster import H as POSTER_H
 from poster import W as POSTER_W
@@ -66,6 +67,14 @@ CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
 CLOUDFLARE_IMAGE_MODEL = os.getenv(
     "CLOUDFLARE_IMAGE_MODEL", "@cf/black-forest-labs/flux-2-klein-9b"
 )
+# Tried in order by the app's image step when the main image model has a
+# server-side failure (Cloudflare 5xx, timeout). Evaluation scripts use only
+# CLOUDFLARE_IMAGE_MODEL, so their recorded model is always the one that ran.
+CLOUDFLARE_IMAGE_FALLBACKS = [
+    m.strip() for m in os.getenv(
+        "CLOUDFLARE_IMAGE_FALLBACK_MODELS", "@cf/black-forest-labs/flux-1-schnell",
+    ).split(",") if m.strip()
+]
 # Writer models, tried in order. Hosted on Cloudflare GPUs: a full brief takes a
 # few seconds instead of minutes on a local CPU. Ollama is the last fallback.
 # Fast model that rewrites the visual direction as a plain photo description,
@@ -193,6 +202,8 @@ def cloudflare_chat(model, content, max_tokens=1000, temperature=0.35, timeout=6
         raise RuntimeError(f"Cloudflare request failed ({response.status_code}): {response.text[:300]}")
     result = response.json().get("result") or {}
     text = result.get("response")
+    if isinstance(text, (dict, list)):   # Workers AI pre-parses replies that are pure JSON
+        text = json.dumps(text)
     if text is None and result.get("choices"):      # OpenAI-style models (e.g. Mistral)
         text = result["choices"][0]["message"].get("content")
     if not isinstance(text, str) or not text.strip():
@@ -365,18 +376,23 @@ surfaces are plain and unbranded; any graphic on the product itself is abstract 
 calm and tidy minimal composition."""
 
 
-def cloudflare_generate_image(image_prompt, account_id, api_token, seed=None):
+class ImageServiceError(RuntimeError):
+    """The image model failed on Cloudflare's side (5xx): another model may still work."""
+
+
+def cloudflare_generate_image(image_prompt, account_id, api_token, seed=None, model=None):
     """Call Cloudflare Workers AI and return generated image bytes."""
+    model = model or CLOUDFLARE_IMAGE_MODEL
     if not account_id or not api_token:
         raise ValueError(
             "Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to your .env file first."
         )
     endpoint = (
         f"https://api.cloudflare.com/client/v4/accounts/{account_id}"
-        f"/ai/run/{CLOUDFLARE_IMAGE_MODEL}"
+        f"/ai/run/{model}"
     )
     headers = {"Authorization": f"Bearer {api_token}"}
-    if "flux-2" in CLOUDFLARE_IMAGE_MODEL:
+    if "flux-2" in model:
         # FLUX.2 models take multipart form input.
         fields = {"prompt": image_prompt[:2048], "width": "1024", "height": "1024"}
         if seed is not None:
@@ -389,7 +405,8 @@ def cloudflare_generate_image(image_prompt, account_id, api_token, seed=None):
     if not response.ok:
         # Avoid printing the secret token in errors; Cloudflare's response body
         # is useful for quota, permission, and model errors.
-        raise RuntimeError(
+        error = ImageServiceError if response.status_code >= 500 else RuntimeError
+        raise error(
             f"Cloudflare image request failed ({response.status_code}): "
             f"{response.text[:700]}"
         )
@@ -425,10 +442,7 @@ INSPECT_QUESTION = (
 
 def inspect_image(image_bytes, subject=None):
     """Vision check of a generated photo; None when the check itself is unavailable."""
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB").resize((512, 512))
-    buf = io.BytesIO()
-    image.save(buf, format="JPEG", quality=85)
-    data_url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    data_url = _jpeg_data_url(image_bytes)
     question = INSPECT_QUESTION
     if subject:
         question = question[:-1] + (f', "subject_matches" (true if the main subject is clearly '
@@ -474,7 +488,7 @@ def product_subject(retrieved):
     return f"{name} ({fields['category'].lower()})" if name and fields.get("category") else name
 
 
-def generate_clean_image(image_prompt, subject=None):
+def generate_clean_image(image_prompt, subject=None, model=None):
     """Generate, inspect and retry until a photo shows the product, has no
     lettering and leaves room for the text.
 
@@ -484,7 +498,7 @@ def generate_clean_image(image_prompt, subject=None):
     for attempt in range(1, IMAGE_ATTEMPTS + 1):
         image_bytes = cloudflare_generate_image(
             image_prompt, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN,
-            seed=int.from_bytes(os.urandom(3), "big"),
+            seed=int.from_bytes(os.urandom(3), "big"), model=model,
         )
         verdict = inspect_image(image_bytes, subject)
         if verdict is not None:   # the layout check is local, so only add it to a real verdict
@@ -494,6 +508,22 @@ def generate_clean_image(image_prompt, subject=None):
         if not _problems(verdict)[0]:
             break
     return best[0], best[1], attempt
+
+
+def generate_poster_image(image_prompt, subject=None):
+    """generate_clean_image with the main model, then each fallback model if the
+    previous one failed on Cloudflare's side. Quota and permission errors are
+    not retried: every model draws on the same account.
+
+    Returns (image bytes, verdict, attempts, model used).
+    """
+    models = [CLOUDFLARE_IMAGE_MODEL] + [m for m in CLOUDFLARE_IMAGE_FALLBACKS if m != CLOUDFLARE_IMAGE_MODEL]
+    for i, model in enumerate(models):
+        try:
+            return (*generate_clean_image(image_prompt, subject, model=model), model)
+        except (ImageServiceError, requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if i == len(models) - 1:
+                raise
 
 
 def extract_section(ad_text, heading, next_headings):
@@ -706,6 +736,138 @@ One word for the typography mood that best suits the visual direction: minimal, 
 
 
 # --------------------------------------------------------------------------
+# Relevance: how well the ad (copy, then poster photo) answers the brief.
+# Scoring rules live in relevance.py; this part only makes the model calls.
+# --------------------------------------------------------------------------
+def _jpeg_data_url(image_bytes, size=512):
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB").resize((size, size))
+    buf = io.BytesIO()
+    image.save(buf, format="JPEG", quality=85)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def judge_reply(prompt):
+    """(reply, model) from a deterministic judge: Cloudflare writers first, then local Ollama."""
+    if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
+        for model in CLOUDFLARE_TEXT_MODELS:
+            try:
+                return cloudflare_chat(model, prompt, max_tokens=700, temperature=0, timeout=45), model
+            except (requests.exceptions.RequestException, RuntimeError):
+                continue
+    response = requests.post(
+        f"{OLLAMA_BASE_URL}/api/generate",
+        json={"model": CHAT_MODEL, "prompt": prompt, "stream": False, "format": "json",
+              "options": {"temperature": 0}},
+        timeout=180,
+    )
+    response.raise_for_status()
+    return response.json()["response"], CHAT_MODEL
+
+
+def current_texts(gen):
+    """The words the user is looking at: kept poster edits, else the generated copy."""
+    if gen.get("saved"):
+        layers = gen["saved"].get("layers", {})
+        return {k: str(layers.get(k, {}).get("text", "")) for k in ("headline", "copy", "cta")}, "edited"
+    return ad_defaults(gen["ad_output"]), "generated"
+
+
+def _relevance_keys(gen, texts):
+    text_key = hashlib.sha1(json.dumps([gen["prompt"], texts], sort_keys=True).encode()).hexdigest()[:16]
+    image_key = hashlib.sha1(gen["image"]).hexdigest()[:16] if gen.get("image") else None
+    return text_key, image_key
+
+
+def _cached_relevance(gen):
+    """The stored report, only while it still describes the current words and photo."""
+    report = gen.get("relevance")
+    if not report:
+        return None
+    return report if report.get("key") == list(_relevance_keys(gen, current_texts(gen)[0])) else None
+
+
+def score_relevance(gen):
+    """Score the ad against its brief. Each signal fails on its own, without failing the rest."""
+    texts, source = current_texts(gen)
+    text_key, image_key = _relevance_keys(gen, texts)
+    previous = gen.get("relevance") or {}
+    unavailable = []
+
+    # semantic: the brief as a search query, the ad as the document (as in retrieval)
+    try:
+        q, d = ollama_embed([f"task: search result | query: {gen['prompt']}",
+                             f"title: none | text: {relevance.ad_text(texts)}"])
+        q, d = np.array(q), np.array(d)
+        semantic = relevance.scaled(float(q @ d / max(np.linalg.norm(q) * np.linalg.norm(d), 1e-12)),
+                                    relevance.SEMANTIC_WINDOW)
+    except (requests.exceptions.RequestException, KeyError, ValueError):
+        semantic = None
+        unavailable.append("semantic")
+
+    # coverage: reuse the judge's verdict while the words are unchanged
+    if previous.get("text_key") == text_key and previous.get("aspects"):
+        aspects, judge_model = previous["aspects"], previous.get("judge_model")
+    else:
+        try:
+            reply, judge_model = judge_reply(relevance.judge_prompt(
+                gen["prompt"], texts, parse_ad_sections(gen["ad_output"])["missing"],
+                product_subject(gen["retrieved"])))
+            aspects = relevance.parse_aspects(reply)
+        except (requests.exceptions.RequestException, RuntimeError, ValueError, KeyError):
+            aspects, judge_model = None, None
+            unavailable.append("coverage")
+
+    products = [r for r in gen["retrieved"] if r["kind"] == "product" and r.get("score") is not None]
+    catalogue = relevance.scaled(products[0]["score"], relevance.CATALOGUE_WINDOW) if products else None
+
+    # visual: the hidden photo, rated by the vision model against the brief and the words
+    visual = None
+    if image_key:
+        if previous.get("visual_key") == [image_key, text_key] and previous.get("visual"):
+            visual = previous["visual"]
+        elif CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
+            try:
+                reply = cloudflare_chat(VISION_MODEL, [
+                    {"type": "text", "text": relevance.visual_question(
+                        gen["prompt"], texts, product_subject(gen["retrieved"]))},
+                    {"type": "image_url", "image_url": {"url": _jpeg_data_url(gen["image"])}},
+                ], max_tokens=150, temperature=0, timeout=40)
+                visual = relevance.parse_visual(reply)
+            except (requests.exceptions.RequestException, RuntimeError, ValueError):
+                visual = None
+        if visual is None:
+            unavailable.append("visual")
+
+    signals = {
+        "semantic": semantic,
+        "coverage": relevance.coverage_score(aspects) if aspects else None,
+        "catalogue": catalogue,
+        "visual": visual["score"] if visual else None,
+    }
+    report = {
+        "key": [text_key, image_key],
+        "text_key": text_key,
+        "visual_key": [image_key, text_key] if visual else None,
+        "score": relevance.overall(signals),
+        "signals": signals,
+        "weights": relevance.WEIGHTS,
+        "aspects": aspects,
+        "visual": visual,
+        "advice": relevance.advice(signals, aspects),
+        "unavailable": unavailable,
+        "texts": source,
+        "has_image": bool(image_key),
+        "judge_model": judge_model,
+        "vision_model": VISION_MODEL if visual else None,
+        "default_threshold": relevance.DEFAULT_THRESHOLD,
+        "scored_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    if report["score"] is None:
+        raise HTTPException(503, "Relevance could not be scored: Ollama and the judge models are unreachable.")
+    return report
+
+
+# --------------------------------------------------------------------------
 # Generations: kept in memory and on disk (generations/<id>/), so saved poster
 # edits survive page reloads and server restarts.
 # --------------------------------------------------------------------------
@@ -807,6 +969,7 @@ def _public(gen):
         "timing": gen.get("timing"),
         "writer_model": gen.get("writer_model"),
         "editor": _editor_state(gen),
+        "relevance": _cached_relevance(gen),
     }
 
 
@@ -837,7 +1000,8 @@ def _bad_gateway(exc, service):
 app = FastAPI(title="Brandora AI")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    # Vite dev server, and the Android app, which serves the UI from its own secure origin.
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://appassets.androidplatform.net"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -857,6 +1021,7 @@ class ReviewRequest(BaseModel):
     decision: Literal["approved", "rejected"]
     config: dict
     seconds: float = 0
+    threshold: Optional[int] = Field(None, ge=0, le=100)   # the relevance bar the reviewer had set
 
 
 class SpeechRequest(BaseModel):
@@ -892,6 +1057,7 @@ def get_config():
         "chat_model": CLOUDFLARE_TEXT_MODELS[0] if cloudflare_ready and CLOUDFLARE_TEXT_MODELS else CHAT_MODEL,
         "embed_model": EMBED_MODEL,
         "image_model": CLOUDFLARE_IMAGE_MODEL,
+        "image_fallbacks": CLOUDFLARE_IMAGE_FALLBACKS,
         "cloudflare_ready": cloudflare_ready,
         "example_prompt": EXAMPLE_PROMPT,
         "knowledge_sources": ["data/products.csv", "data/company_guidelines.csv"],
@@ -951,6 +1117,7 @@ def generate(req: GenerateRequest):
 
     gen = {
         "id": uuid.uuid4().hex,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "prompt": prompt,
         "ad_output": output,
         "retrieved": retrieved,
@@ -969,6 +1136,103 @@ def generate(req: GenerateRequest):
     }
     _store(gen)
     return _public(gen)
+
+
+def _shown_config(gen):
+    """The poster as the user last left it: approved, else kept edits, else the design."""
+    return gen.get("approved") or gen.get("saved") or gen.get("design")
+
+
+def _thumb_version(gen):
+    cfg = _shown_config(gen)
+    return hashlib.sha1(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:10] if cfg else None
+
+
+def _summary(gen, updated):
+    """One row of the history list: enough to recognise an ad without opening it."""
+    try:
+        sections = parse_ad_sections(gen.get("ad_output", ""))
+        headline = ad_defaults(gen.get("ad_output", ""))["headline"]
+    except Exception:
+        sections, headline = {}, ""
+    report = gen.get("relevance") or {}
+    return {
+        "copy": (sections.get("copy") or "")[:200],
+        "thumb": _thumb_version(gen),
+        "id": gen["id"],
+        "headline": headline,
+        "prompt": gen.get("prompt", "")[:160],
+        "product": product_subject(gen.get("retrieved") or []),
+        "status": gen.get("status", "review") if gen.get("design") else "copy",
+        "relevance": report.get("score"),
+        "created_at": gen.get("created_at"),
+        "updated_at": updated,
+    }
+
+
+@app.get("/api/generations")
+def list_generations():
+    """Recent advertisements, newest activity first (the history sidebar)."""
+    try:
+        folders = [d for d in os.listdir(GEN_DIR) if _GID.match(d)]
+    except OSError:
+        return {"items": []}
+    rows = []
+    for gid in folders:
+        path = os.path.join(GEN_DIR, gid, "gen.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                gen = json.load(fh)
+            mtime = os.path.getmtime(path)
+        except (OSError, ValueError):
+            continue
+        rows.append((mtime, _summary(gen, time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(mtime)))))
+    rows.sort(key=lambda r: r[0], reverse=True)
+    return {"items": [r[1] for r in rows]}
+
+
+@app.get("/api/generations/{gid}/thumb.jpg")
+def generation_thumb(gid: str, v: str = ""):
+    """Small JPEG of the poster for the history page, cached next to the generation."""
+    gen = _get(gid)
+    version = _thumb_version(gen)
+    if not version or not gen.get("image"):
+        raise HTTPException(404, "This ad has no poster yet.")
+    path = os.path.join(_gen_dir(gid), f"thumb-{version}.jpg")
+    if not os.path.exists(path):
+        png = render_poster_png(gen["image"], config_from_payload(_shown_config(gen)), guides=False)
+        img = Image.open(io.BytesIO(png)).convert("RGB")
+        img.thumbnail((420, 420), Image.LANCZOS)
+        for old in os.listdir(_gen_dir(gid)):
+            if old.startswith("thumb-"):
+                os.remove(os.path.join(_gen_dir(gid), old))
+        img.save(path + ".part", format="JPEG", quality=84, optimize=True)
+        os.replace(path + ".part", path)
+    # The URL carries the version, so the browser may keep it for good.
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@app.delete("/api/generations/{gid}")
+def delete_generation(gid: str):
+    """Remove an advertisement and its photo from memory and disk."""
+    if not _GID.match(gid):
+        raise HTTPException(404, "Unknown advertisement.")
+    with _GEN_LOCK:
+        _GENERATIONS.pop(gid, None)
+        folder = _gen_dir(gid)
+        if os.path.isdir(folder):
+            for name in os.listdir(folder):
+                os.remove(os.path.join(folder, name))
+            os.rmdir(folder)
+    return {"ok": True}
+
+
+@app.get("/api/generations/{gid}/brief.txt")
+def download_brief(gid: str):
+    """The full generated brief as a text file (a plain link, so it also works inside the Android app)."""
+    gen = _get(gid)
+    return Response(gen["ad_output"], media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="brandora_advertisement.txt"'})
 
 
 @app.get("/api/generations/{gid}")
@@ -1001,7 +1265,7 @@ def generate_image(gid: str):
         # Two separate processes: the image model only ever sees a plain scene
         # description, and the words are typeset afterwards by poster.py.
         scene = describe_scene(gen)
-        image_bytes, verdict, attempts = generate_clean_image(
+        image_bytes, verdict, attempts, image_model = generate_poster_image(
             build_image_prompt(scene), product_subject(gen["retrieved"]))
         design = _design(gen, image_bytes, texts)   # also fails early if the image is unusable
     except ValueError as exc:
@@ -1014,7 +1278,8 @@ def generate_image(gid: str):
     # The raw image stays internal; the browser only ever sees the composed poster.
     gen.update(image=image_bytes, design=design, saved=None, saved_at=None,
                status="review", approved=None,
-               image_check={"scene": scene, "attempts": attempts, "verdict": verdict})
+               image_check={"scene": scene, "attempts": attempts, "verdict": verdict,
+                            "model": image_model, "fallback": image_model != CLOUDFLARE_IMAGE_MODEL})
     _store(gen, image=True)
     return {"ok": True, "editor": _editor_state(gen)}
 
@@ -1023,6 +1288,20 @@ def _need_image(gen):
     if not gen["image"]:
         raise HTTPException(409, "Generate the ad image first.")
     return gen["image"]
+
+
+@app.post("/api/generations/{gid}/relevance")
+def generation_relevance(gid: str, refresh: bool = False):
+    """Relevance of the current words (and photo, once generated) to the brief; cached until they change."""
+    gen = _get(gid)
+    cached = None if refresh else _cached_relevance(gen)
+    if cached:
+        return cached
+    if refresh:
+        gen["relevance"] = None   # re-ask the judges instead of reusing their verdicts
+    gen["relevance"] = score_relevance(gen)
+    _store(gen)
+    return gen["relevance"]
 
 
 @app.get("/api/generations/{gid}/auto-layout.png")
@@ -1080,7 +1359,11 @@ def poster_review(gid: str, req: ReviewRequest):
     cfg = config_from_payload(req.config)
     original = {k: v for k, v in ad_defaults(gen["ad_output"]).items()}
     final = {k: cfg["layers"][k]["text"] for k in ("headline", "copy", "cta")}
-    log_review(req.decision, gen["prompt"], original, final, req.seconds)
+    shown = gen.get("relevance") or {}
+    log_review(req.decision, gen["prompt"], original, final, req.seconds,
+               relevance={"score": shown.get("score"), "signals": shown.get("signals"),
+                          "threshold": req.threshold, "scored_texts": shown.get("texts")}
+               if shown.get("score") is not None else None)
     # A decision also keeps the edits it was made on.
     gen.update(saved=_editable(req.config), saved_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
                status=req.decision,

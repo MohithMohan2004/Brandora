@@ -602,7 +602,8 @@ def config_from_payload(payload):
 # --------------------------------------------------------------------------
 # Review log (human-in-the-loop evidence)
 # --------------------------------------------------------------------------
-def log_review(decision, brief, original, final, seconds):
+def log_review(decision, brief, original, final, seconds, relevance=None):
+    """relevance: the score the reviewer saw, so decisions can be compared with it later."""
     record = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "decision": decision,
@@ -612,6 +613,8 @@ def log_review(decision, brief, original, final, seconds):
         "text_edited": original != final,
         "review_seconds": round(seconds, 1),
     }
+    if relevance:
+        record["relevance"] = relevance
     with _log_lock:
         with open(LOG_PATH, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
