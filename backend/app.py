@@ -61,6 +61,10 @@ FRONTEND_DIST = os.path.join(BASE_DIR, "..", "frontend", "dist")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "llama3.2:3b")
 EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "embeddinggemma")
+# "cloudflare" runs the same embeddinggemma on Workers AI, for hosts with no Ollama
+# (Render). Vectors are cached per provider so the two never mix.
+EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "ollama").strip().lower()
+CLOUDFLARE_EMBED_MODEL = os.getenv("CLOUDFLARE_EMBED_MODEL", "@cf/google/embeddinggemma-300m")
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
 CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
 # FLUX.2 klein follows "plain, blank surfaces" far better than FLUX.1 schnell,
@@ -119,14 +123,36 @@ def load_data():
     return products, guidelines
 
 
-def ollama_embed(texts):
+def ollama_embed(texts, timeout=120):
+    """Embeddings from the configured provider (EMBED_PROVIDER)."""
+    if EMBED_PROVIDER == "cloudflare":
+        return cloudflare_embed(texts, timeout)
     response = requests.post(
         f"{OLLAMA_BASE_URL}/api/embed",
         json={"model": EMBED_MODEL, "input": texts},
-        timeout=120,
+        timeout=timeout,
     )
     response.raise_for_status()
     return response.json()["embeddings"]
+
+
+def cloudflare_embed(texts, timeout=120):
+    """Workers AI embeddings, sent in small batches to stay under the request limit."""
+    vectors = []
+    for start in range(0, len(texts), 50):
+        response = requests.post(
+            f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CLOUDFLARE_EMBED_MODEL}",
+            headers={"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"},
+            json={"text": list(texts[start:start + 50])},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        vectors.extend(response.json()["result"]["data"])
+    return vectors
+
+
+def embed_cache_name():
+    return CLOUDFLARE_EMBED_MODEL if EMBED_PROVIDER == "cloudflare" else EMBED_MODEL
 
 
 _EMBED_LOCK = threading.Lock()
@@ -157,13 +183,7 @@ def cached_ollama_embed_texts(texts, model_name, base_url):
 
         missing = [(k, t) for k, t in zip(keys, texts) if k not in cache]
         if missing:
-            response = requests.post(
-                f"{base_url.rstrip('/')}/api/embed",
-                json={"model": model_name, "input": [t for _, t in missing]},
-                timeout=300,
-            )
-            response.raise_for_status()
-            cache.update(zip((k for k, _ in missing), response.json()["embeddings"]))
+            cache.update(zip((k for k, _ in missing), ollama_embed([t for _, t in missing], timeout=300)))
             path = _embed_cache_path(model_name)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path + ".part", "w", encoding="utf-8") as fh:
@@ -643,7 +663,7 @@ def retrieve_context(user_prompt, products, guidelines, top_k=6):
     # Catalogue vectors come from the on-disk cache. Only the user's
     # query is embedded on each request, instead of re-embedding every CSV row.
     doc_vectors = np.array(
-        cached_ollama_embed_texts(texts, EMBED_MODEL, OLLAMA_BASE_URL),
+        cached_ollama_embed_texts(texts, embed_cache_name(), OLLAMA_BASE_URL),
         dtype=np.float32,
     )
     query_vector = np.array(ollama_embed([f"task: search result | query: {user_prompt}"])[0],
@@ -1056,7 +1076,7 @@ def get_config():
     cloudflare_ready = bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN)
     return {
         "chat_model": CLOUDFLARE_TEXT_MODELS[0] if cloudflare_ready and CLOUDFLARE_TEXT_MODELS else CHAT_MODEL,
-        "embed_model": EMBED_MODEL,
+        "embed_model": embed_cache_name(),
         "image_model": CLOUDFLARE_IMAGE_MODEL,
         "image_fallbacks": CLOUDFLARE_IMAGE_FALLBACKS,
         "cloudflare_ready": cloudflare_ready,

@@ -12,3 +12,4 @@ backend/fonts/google/
 backend/fonts/pairing_history.json
 backend/cache/
 eval_results/
+.env.render

@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+venv
+.venv
+**/__pycache__
+**/node_modules
+frontend/dist
+android
+eval
+eval_results
+data
+backend/generations
+backend/cache
+backend/fonts/google
+backend/fonts/pairing_history.json
+*.apk

@@ -1,0 +1,14 @@
+# Render Blueprint: New > Blueprint, pick this repo. Secrets are entered in the dashboard.
+services:
+  - type: web
+    name: brandora
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/config
+    envVars:
+      - key: EMBED_PROVIDER
+        value: cloudflare
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_API_TOKEN
+        sync: false
