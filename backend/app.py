@@ -17,6 +17,7 @@ import os
 import re
 import threading
 import time
+import traceback
 import uuid
 from collections import Counter, OrderedDict
 from functools import lru_cache
@@ -1113,6 +1114,7 @@ def generate(req: GenerateRequest):
     except requests.exceptions.RequestException as exc:
         raise _bad_gateway(exc, "ollama")
     except Exception as exc:
+        traceback.print_exc()   # the 500 detail alone is too thin to trace a one-off failure
         raise HTTPException(500, f"Generation failed: {exc}")
 
     gen = {
@@ -1273,6 +1275,7 @@ def generate_image(gid: str):
     except requests.exceptions.RequestException as exc:
         raise _bad_gateway(exc, "cloudflare")
     except Exception as exc:
+        traceback.print_exc()   # the 500 detail alone is too thin to trace a one-off failure
         raise HTTPException(500, f"Image generation failed: {exc}")
 
     # The raw image stays internal; the browser only ever sees the composed poster.
@@ -1302,6 +1305,29 @@ def generation_relevance(gid: str, refresh: bool = False):
     gen["relevance"] = score_relevance(gen)
     _store(gen)
     return gen["relevance"]
+
+
+class RelayoutRequest(BaseModel):
+    texts: Optional[dict] = None
+
+
+@app.post("/api/generations/{gid}/poster/relayout")
+def relayout_poster(gid: str, req: RelayoutRequest):
+    """A fresh designed layout on the same photo: no image call, no quota.
+
+    Posters made before the fixed-zone layout can have text over the product;
+    this redoes their layout without paying for a new image.
+    """
+    gen = _get(gid)
+    image = _need_image(gen)
+    if gen.get("status") in ("approved", "rejected"):
+        raise HTTPException(409, "Reopen the poster for editing first.")
+    texts = None
+    if req.texts:
+        texts = {k: str(req.texts.get(k, ""))[:600] for k in ("headline", "copy", "cta")}
+    gen.update(design=_design(gen, image, texts), saved=None, saved_at=None)
+    _store(gen)
+    return {"ok": True, "editor": _editor_state(gen)}
 
 
 @app.get("/api/generations/{gid}/auto-layout.png")
@@ -1406,6 +1432,7 @@ def speech(gid: str, req: SpeechRequest):
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
+        traceback.print_exc()   # the 500 detail alone is too thin to trace a one-off failure
         raise HTTPException(500, f"Voice-over failed: {exc}")
     return FileResponse(
         path, media_type="audio/wav", filename="brandora_voiceover.wav",

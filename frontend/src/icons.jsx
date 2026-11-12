@@ -51,3 +51,15 @@ export default function Icon({ name, size = 18, className = "", label }) {
     </svg>
   );
 }
+
+// The Brandora mark: a "B" made of poster parts (stem, headline block, button block).
+// Same shapes as android/tools/make_icons.py, on a 24 grid; the tile is .brand-mark.
+export function Logo({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="7.03" y="5.44" width="2.34" height="13.12" rx="0.56" fill="#fff" />
+      <path d="M10.73 5.44h1.955a2.975 2.975 0 0 1 0 5.95H10.73z" fill="#fff" />
+      <path d="M10.73 12.75h3.335a2.905 2.905 0 0 1 0 5.81H10.73z" fill="#7c74ff" />
+    </svg>
+  );
+}

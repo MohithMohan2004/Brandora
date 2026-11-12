@@ -354,8 +354,8 @@ input[type="range"]:disabled { opacity: 0.45; cursor: default; }
 .side-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .brand-mark {
   display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; color: #fff;
-  background: linear-gradient(140deg, #8b7bff, #4f46e5 55%, #3730a3);
-  box-shadow: 0 2px 6px rgba(79, 70, 229, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  background: #16161d;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 .new-ad { height: 34px; }
 .side-section { display: grid; gap: 4px; min-height: 0; }
@@ -604,6 +604,7 @@ input[type="range"]:disabled { opacity: 0.45; cursor: default; }
 }
 .ad-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
 audio { width: 100%; height: 36px; margin-top: 12px; }
+.ad-card .next-step { margin-top: 16px; }
 
 .brief-quote { padding: 0 4px; }
 .brief-quote p {
@@ -653,8 +654,8 @@ audio { width: 100%; height: 36px; margin-top: 12px; }
 .rel-verdict strong { font-size: 17px; font-weight: 700; letter-spacing: -0.018em; }
 .rel-verdict p { font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
 .signals { display: grid; gap: 8px; margin-top: 16px; }
-.signal { display: grid; grid-template-columns: 92px minmax(0, 1fr) 62px; align-items: center; gap: 10px; font-size: 12.5px; }
-.signal-label { color: var(--ink-2); font-weight: 500; }
+.signal { display: grid; grid-template-columns: 118px minmax(0, 1fr) 76px; align-items: center; gap: 10px; font-size: 12.5px; }
+.signal-label { color: var(--ink-2); font-weight: 500; white-space: nowrap; }
 .signal-track { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
 .signal.missing .signal-track { background: repeating-linear-gradient(-45deg, var(--surface-3) 0 4px, transparent 4px 8px); }
 .signal-fill { display: block; height: 100%; border-radius: inherit; background: var(--tone); transform-origin: left; animation: grow 700ms var(--spring) both; }

@@ -120,7 +120,7 @@ export default function History({ items, loading, threshold, currentId, onOpen, 
                       </span>
                     </button>
                     <button className="icon-btn sm ad-tile-delete" onClick={() => onRemove(h)}
-                      aria-label={`Delete ${h.headline || "ad"}`} title="Delete">
+                      aria-label={`Delete ${h.headline || "ad"}`} title="Delete ad">
                       <Icon name="trash" size={15} />
                     </button>
                   </li>

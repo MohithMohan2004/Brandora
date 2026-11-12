@@ -62,12 +62,9 @@ export default function AdResult({ gen, busy, onContinue, onRegenerate, onEditBr
   return (
     <>
       <Toolbar title="Copy" subtitle={productName ? `${productName} · step 2 of 3` : "Step 2 of 3"}>
-        <button className="btn" onClick={onRegenerate} disabled={Boolean(busy)} title="Write a new version from the same brief">
+        <button className="btn" onClick={onRegenerate} disabled={Boolean(busy)} title="Write new ad copy from the same brief">
           {busy === "generate" ? <span className="spinner xs" /> : <Icon name="refresh" size={16} />}
-          <span className="hide-sm">Rewrite</span>
-        </button>
-        <button className="btn primary" onClick={onContinue}>
-          <span>Design poster</span><Icon name="arrowRight" size={16} />
+          <span className="hide-sm">Rewrite copy</span>
         </button>
       </Toolbar>
 
@@ -79,21 +76,24 @@ export default function AdResult({ gen, busy, onContinue, onRegenerate, onEditBr
             <p className="ad-copy">{sections.copy}</p>
             {sections.cta && <span className="ad-cta">{sections.cta}</span>}
             <div className="ad-actions">
-              <button className="btn sm" onClick={copyText}><Icon name="clipboard" size={15} /> Copy text</button>
+              <button className="btn sm" onClick={copyText}><Icon name="clipboard" size={15} /> Copy ad text</button>
               <button className="btn sm" onClick={voiceOver} disabled={speaking}>
                 {speaking ? <span className="spinner xs" /> : <Icon name="speaker" size={15} />} Voice-over
               </button>
               <a className="btn sm" href={api.briefUrl(gen.id)} download="brandora_advertisement.txt">
-                <Icon name="download" size={15} /> Full brief
+                <Icon name="download" size={15} /> Download brief
               </a>
             </div>
             {audioUrl && <audio controls autoPlay src={audioUrl} />}
+            <button className="btn primary lg block next-step" onClick={onContinue}>
+              <Icon name="poster" size={17} /><span>Design poster</span><Icon name="arrowRight" size={16} />
+            </button>
           </article>
 
           <section className="brief-quote">
             <div className="block-head">
               <h3>Your brief</h3>
-              <button className="link-btn" onClick={onEditBrief}><Icon name="edit" size={14} /> Edit</button>
+              <button className="link-btn" onClick={onEditBrief}><Icon name="edit" size={14} /> Edit brief</button>
             </div>
             <p>{gen.prompt}</p>
           </section>
@@ -130,7 +130,7 @@ export default function AdResult({ gen, busy, onContinue, onRegenerate, onEditBr
             <dl className="timing">
               <div><dt>Retrieval</dt><dd>{timing.retrieval_seconds.toFixed(1)}s</dd></div>
               <div><dt>Writing</dt><dd>{timing.generation_seconds.toFixed(1)}s</dd></div>
-              {gen.writer_model && <div><dt>Writer</dt><dd title={gen.writer_model}>{gen.writer_model.split("/").pop()}</dd></div>}
+              {gen.writer_model && <div><dt>Writer model</dt><dd title={gen.writer_model}>{gen.writer_model.split("/").pop()}</dd></div>}
             </dl>
           </section>
         </aside>

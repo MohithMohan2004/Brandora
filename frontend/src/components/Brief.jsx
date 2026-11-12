@@ -146,9 +146,9 @@ export default function Brief({ prompt, setPrompt, example, catalogue, onSubmit,
                 <>
                   <span className="composer-count">{words} {words === 1 ? "word" : "words"}</span>
                   {example && prompt.trim() !== example.trim() && (
-                    <button className="chip" onClick={() => setPrompt(example)}>Use example</button>
+                    <button className="chip" onClick={() => setPrompt(example)}>Use example brief</button>
                   )}
-                  {prompt && <button className="chip" onClick={() => { setPrompt(""); textRef.current?.focus(); }}>Clear</button>}
+                  {prompt && <button className="chip" onClick={() => { setPrompt(""); textRef.current?.focus(); }}>Clear brief</button>}
                 </>
               )}
             </div>
@@ -163,7 +163,7 @@ export default function Brief({ prompt, setPrompt, example, catalogue, onSubmit,
               )}
               <button type="button" className="btn primary" onClick={onSubmit} disabled={busy || !prompt.trim()}
                 title={`Generate (${MOD} + Enter)`}>
-                {busy ? <><span className="spinner xs" /> Writing</> : <>Generate <Kbd>{MOD} ↵</Kbd></>}
+                {busy ? <><span className="spinner xs" /> Writing</> : <>Generate ad <Kbd>{MOD} ↵</Kbd></>}
               </button>
             </div>
           </div>

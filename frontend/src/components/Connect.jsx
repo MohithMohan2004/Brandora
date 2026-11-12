@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api, getServer, normalizeServer, setServer } from "../api.js";
-import Icon from "../icons.jsx";
+import Icon, { Logo } from "../icons.jsx";
 
 // Android app only: the UI ships in the APK, the work happens on the computer
 // running ./start.sh --lan. This screen pairs the two.
@@ -33,7 +33,7 @@ export default function Connect({ state, onConnected }) {
     return (
       <div className="connect">
         <div className="connect-card center">
-          <span className="brand-mark lg"><Icon name="sparkle" size={22} /></span>
+          <span className="brand-mark lg"><Logo size={38} /></span>
           <p className="muted"><span className="spinner xs" /> Connecting to {saved}…</p>
         </div>
       </div>
@@ -43,7 +43,7 @@ export default function Connect({ state, onConnected }) {
   return (
     <div className="connect">
       <form className="connect-card" onSubmit={submit}>
-        <span className="brand-mark lg"><Icon name="sparkle" size={22} /></span>
+        <span className="brand-mark lg"><Logo size={38} /></span>
         <h1>Connect to Brandora</h1>
         <p>Brandora writes and designs on your computer. Pair this phone with it once:</p>
         <ol className="connect-steps">

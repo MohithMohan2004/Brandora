@@ -8,12 +8,12 @@ import { keptPoster, sameConfig } from "./poster-state.js";
 
 const TABS = [
   { value: "headline", label: "Headline" },
-  { value: "copy", label: "Copy" },
-  { value: "cta", label: "Button" },
-  { value: "background", label: "Bands" },
+  { value: "copy", label: "Body copy" },
+  { value: "cta", label: "CTA button" },
+  { value: "background", label: "Text bands" },
 ];
 
-// Poster step: the photo prompt until an image exists, then the studio.
+// Poster step: the generate prompt until a poster exists, then the studio.
 export default function PosterView(props) {
   const { editor, draft } = props;
   return editor && draft ? <Studio {...props} /> : <EmptyPoster {...props} />;
@@ -34,18 +34,18 @@ function EmptyPoster({ busy, onGenerateImage, cloudflareReady }) {
       <div className="page">
         <div className="empty-state">
           <span className="empty-icon"><Icon name="image" size={28} /></span>
-          <h2>Generate the photo</h2>
+          <h2>Generate your poster</h2>
           <p>
-            Brandora turns the visual direction into a plain photo description with no words or logos, checks each
-            photo for stray lettering and clutter, then typesets your headline, copy and button around the product.
+            Brandora creates a background photo from the visual direction, with no words or logos, checks it for stray
+            lettering and clutter, then typesets your headline, copy and call-to-action button around the product.
           </p>
           {cloudflareReady === false && (
             <div className="inline-note warn"><Icon name="alert" size={16} />
-              <span>Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to .env to enable image generation.</span></div>
+              <span>Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to .env to enable poster generation.</span></div>
           )}
           <button className="btn primary lg" onClick={onGenerateImage} disabled={busy}>
-            {busy ? <><span className="spinner xs" /> {elapsed < 6 ? "Describing the scene" : "Generating and checking the photo"}… {elapsed}s</>
-              : <><Icon name="sparkle" size={16} /> Generate photo</>}
+            {busy ? <><span className="spinner xs" /> {elapsed < 6 ? "Describing the poster scene" : "Generating the poster background"}… {elapsed}s</>
+              : <><Icon name="sparkle" size={16} /> Generate poster</>}
           </button>
         </div>
       </div>
@@ -174,8 +174,28 @@ function Studio({ gen, editor, setEditor, draft, setDraft, busy, onGenerateImage
 
   const newPhoto = () => {
     setMenuOpen(false);
-    if (dirty && !window.confirm("A new photo restarts the layout. Your text is kept, but other unsaved changes are lost. Continue?")) return;
+    if (dirty && !window.confirm("Regenerating the poster creates a new background photo and layout. Your text is kept, but other unsaved changes are lost. Continue?")) return;
     onGenerateImage();
+  };
+
+  // Same photo, fresh layout: free (no image call) and keeps the current words.
+  const redoLayout = async () => {
+    setMenuOpen(false);
+    if (dirty && !window.confirm("Redoing the layout places the text again on this photo. Your text is kept, but other unsaved changes are lost. Continue?")) return;
+    setSaving(true);
+    try {
+      const texts = Object.fromEntries(["headline", "copy", "cta"].map((k) => [k, layers[k].text]));
+      const res = await api.relayoutPoster(gen.id, texts);
+      setEditor(res.editor);
+      setDraft(keptPoster(res.editor));
+      toast({ kind: "ok", text: res.editor.scrim?.frame
+        ? "Layout redone. The photo is framed so no text covers the product."
+        : "Layout redone. The text sits in the clear areas of the photo." });
+    } catch (err) {
+      toast({ kind: "error", text: err.message });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const closeMenu = useCallback(() => setMenuOpen(false), []);
@@ -184,7 +204,7 @@ function Studio({ gen, editor, setEditor, draft, setDraft, busy, onGenerateImage
   const saveState = status === "approved" ? "Approved"
     : status === "rejected" ? "Rejected"
     : dirty ? "Unsaved changes"
-    : editor.saved_at ? `Kept ${editor.saved_at.slice(11, 16)}` : "Generated design";
+    : editor.saved_at ? `Kept ${editor.saved_at.slice(11, 16)}` : "Not edited";
 
   const L = layers[tab];
   const check = editor.image_check || {};
@@ -198,12 +218,13 @@ function Studio({ gen, editor, setEditor, draft, setDraft, busy, onGenerateImage
         </button>
         <Popover open={menuOpen} onClose={closeMenu} anchorRef={menuRef} placement="bottom-end" width={250} label="Poster actions">
           <div className="menu">
-            <MenuItem icon="sparkle" onClick={newPhoto} disabled={busy || locked}>New photo</MenuItem>
+            <MenuItem icon="sparkle" onClick={newPhoto} disabled={busy || locked}>Regenerate poster</MenuItem>
+            <MenuItem icon="grid" onClick={redoLayout} disabled={busy || saving || locked}>Redo layout (same photo)</MenuItem>
             <MenuItem icon="undo" onClick={() => { setDraft(structuredClone(designed)); setMenuOpen(false); }}
               disabled={locked || sameConfig(draft, designed)}>Reset to generated design</MenuItem>
             <div className="menu-sep" />
             <MenuItem icon="download" href={api.autoLayoutUrl(gen.id, true)} download onClick={() => setMenuOpen(false)}>
-              Download auto-layout
+              Download unedited poster
             </MenuItem>
           </div>
         </Popover>
@@ -213,7 +234,7 @@ function Studio({ gen, editor, setEditor, draft, setDraft, busy, onGenerateImage
             {dirty && <button className="btn ghost hide-sm" onClick={() => setDraft(kept)} disabled={saving}>Discard</button>}
             <button className="btn" onClick={keep} disabled={!dirty || saving} title={`Keep changes (${MOD} + S)`}>
               {saving && dirty ? <span className="spinner xs" /> : <Icon name="check" size={16} />}
-              <span className="hide-sm">Keep</span>{dirty && <Kbd>{MOD} S</Kbd>}
+              <span className="hide-sm">Keep changes</span>{dirty && <Kbd>{MOD} S</Kbd>}
             </button>
             <span className="toolbar-sep" />
             <button className="btn ghost danger" onClick={() => decide("rejected")} disabled={saving}>Reject</button>
@@ -240,7 +261,7 @@ function Studio({ gen, editor, setEditor, draft, setDraft, busy, onGenerateImage
         {status === "approved" && (
           <>
             <button className="btn" onClick={reopen}><Icon name="edit" size={16} /> <span className="hide-sm">Edit again</span></button>
-            <a className="btn primary" href={api.downloadUrl(gen.id)} download><Icon name="download" size={16} /> Download PNG</a>
+            <a className="btn primary" href={api.downloadUrl(gen.id)} download><Icon name="download" size={16} /> Download poster</a>
           </>
         )}
         {status === "rejected" && (
@@ -328,9 +349,17 @@ function Studio({ gen, editor, setEditor, draft, setDraft, busy, onGenerateImage
 
             {tab === "background" && (
               <div className="group">
-                <p className="muted small">Soft colour bands behind the text keep it readable on any photo.</p>
+                <p className="muted small">
+                  {scrim.frame
+                    ? "Solid bands hold the text and the photo sits between them, so nothing covers the product."
+                    : "Soft colour bands behind the text keep it readable on any photo."}
+                </p>
+                <Switch label="Frame the photo" checked={Boolean(scrim.frame)} disabled={locked}
+                  onChange={(v) => setScrim({ ...scrim, frame: v, strength: v ? 1 : Math.min(scrim.strength, 0.35) })} />
                 <ColorField label="Band colour" value={scrim.color} disabled={locked} onChange={(v) => setScrim({ ...scrim, color: v })} />
-                <Slider label="Strength" value={scrim.strength} min={0} max={1} step={0.05} disabled={locked} onChange={(v) => setScrim({ ...scrim, strength: v })} />
+                {!scrim.frame && (
+                  <Slider label="Strength" value={scrim.strength} min={0} max={1} step={0.05} disabled={locked} onChange={(v) => setScrim({ ...scrim, strength: v })} />
+                )}
                 <div className="row2">
                   <Slider label="Top band" unit="px" value={scrim.top_h} min={0} max={600} disabled={locked} onChange={(v) => setScrim({ ...scrim, top_h: v })} />
                   <Slider label="Bottom band" unit="px" value={scrim.bottom_h} min={0} max={700} disabled={locked} onChange={(v) => setScrim({ ...scrim, bottom_h: v })} />
@@ -354,7 +383,7 @@ function Studio({ gen, editor, setEditor, draft, setDraft, busy, onGenerateImage
               )}
               {check.verdict && (
                 check.verdict.lettering
-                  ? <li className="warn-ink"><Icon name="alert" size={13} /> Photo may contain stray lettering. Try a new photo.</li>
+                  ? <li className="warn-ink"><Icon name="alert" size={13} /> Background photo may contain stray lettering. Try Regenerate poster.</li>
                   : <li><Icon name="check" size={13} /> No lettering{check.verdict.cluttered ? "" : ", tidy"}
                     {check.attempts > 1 ? ` · best of ${check.attempts}` : ""}</li>
               )}
@@ -365,7 +394,7 @@ function Studio({ gen, editor, setEditor, draft, setDraft, busy, onGenerateImage
               )}
             </ul>
             <div className="stage-tools">
-              {(rendering || busy) && <span className="muted small nowrap"><span className="spinner xs" /> {busy ? "New photo…" : "Updating"}</span>}
+              {(rendering || busy) && <span className="muted small nowrap"><span className="spinner xs" /> {busy ? "Regenerating poster…" : "Updating preview"}</span>}
               {!locked && (
                 <button className={`chip-btn ${guides ? "on" : ""}`} onClick={() => setGuides((g) => !g)} aria-pressed={guides}
                   title="Show position guides on the preview">

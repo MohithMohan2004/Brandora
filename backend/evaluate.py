@@ -257,9 +257,12 @@ def text_blocks(cfg):
 
 def block_contrast(base, cfg, top, bottom, layer):
     """WCAG contrast of the text colour against the median background behind it (band included)."""
-    scrim = Image.new("RGBA", (poster.W, poster.H), (0, 0, 0, 0))
-    poster._draw_scrim(ImageDraw.Draw(scrim), cfg["scrim"])
-    bg = Image.alpha_composite(base.convert("RGBA"), scrim).convert("RGB")
+    if cfg["scrim"].get("frame"):
+        bg = poster._framed(base, cfg["scrim"]).convert("RGB")
+    else:
+        scrim = Image.new("RGBA", (poster.W, poster.H), (0, 0, 0, 0))
+        poster._draw_scrim(ImageDraw.Draw(scrim), cfg["scrim"])
+        bg = Image.alpha_composite(base.convert("RGBA"), scrim).convert("RGB")
     half = layer["width"] / 200 * poster.W
     cx = layer["x"] / 100 * poster.W
     region = np.asarray(bg.crop((int(cx - half), int(max(0, top)), int(cx + half), int(min(poster.H, bottom)))))
@@ -302,7 +305,11 @@ def eval_images(n, seed):
 
         cfg = poster.config_from_payload(design)
         base = ImageOps.fit(Image.open(io.BytesIO(image_bytes)).convert("RGB"), (poster.W, poster.H))
-        span = poster.subject_span(base)
+        if cfg["scrim"]["frame"]:   # framed: any text reaching into the photo counts
+            box = poster.photo_box(cfg["scrim"]["top_h"], cfg["scrim"]["bottom_h"])
+            span = (box[1], box[3])
+        else:
+            span = poster.subject_span(base)
         blocks = text_blocks(cfg)
         overlap = sum(max(0, min(b, span[1]) - max(t, span[0])) for t, b, _ in blocks) if span else 0
         contrasts = [block_contrast(base, cfg, t, b, layer) for t, b, layer in blocks]
@@ -314,7 +321,7 @@ def eval_images(n, seed):
             "product_fidelity": fidelity,
             "text_overlaps_product": overlap > 0,
             "headline_contrast": round(contrasts[0], 2), "copy_contrast": round(contrasts[1], 2),
-            "style": design["design"]["style"],
+            "style": design["design"]["style"], "framed": cfg["scrim"]["frame"],
         })
 
     ok = [r for r in rows if "error" not in r]

@@ -15,9 +15,9 @@ const BAR_TEXT = { ok: "Meets your bar", warn: "Just under your bar", bad: "Belo
 
 const SIGNALS = [
   ["coverage", "Brief coverage", "Share of the brief's requests the copy delivers, rated by an LLM judge."],
-  ["semantic", "Meaning", "How close the words are in meaning to the brief (embeddinggemma, calibrated)."],
-  ["visual", "Photo fit", "Whether the photo shows the product and suits the audience, tone and message."],
-  ["catalogue", "Catalogue", "How closely your best catalogue product fits the brief."],
+  ["semantic", "Meaning match", "How close the words are in meaning to the brief (embeddinggemma, calibrated)."],
+  ["visual", "Photo fit", "Whether the poster photo shows the product and suits the audience, tone and message."],
+  ["catalogue", "Catalogue match", "How closely your best catalogue product fits the brief."],
 ];
 
 const STATUS = {
@@ -117,7 +117,7 @@ export default function RelevancePanel({ report, state, threshold, setThreshold,
         <div className="inline-note warn">
           <Icon name="alert" size={16} />
           <span>Couldn't score relevance. Ollama or the judge model may be unavailable.</span>
-          <button className="link-btn" onClick={onRefresh}>Retry</button>
+          <button className="link-btn" onClick={onRefresh}>Retry scoring</button>
         </div>
       ) : (
         <>
@@ -149,7 +149,7 @@ export default function RelevancePanel({ report, state, threshold, setThreshold,
                   <span className="signal-track">
                     {value != null && <span className={`signal-fill t-${tier(value, threshold)}`} style={{ width: `${value}%` }} />}
                   </span>
-                  <span className="signal-value">{!report ? "…" : pending ? "after photo" : value == null ? "n/a" : value}</span>
+                  <span className="signal-value">{!report ? "…" : pending ? "after poster" : value == null ? "n/a" : value}</span>
                 </div>
               );
             })}
@@ -208,7 +208,7 @@ export function RelevanceStrip({ report, state, threshold, dirty, onRefresh }) {
     return state === "error" ? (
       <div className="rel-strip">
         <span className="rel-strip-text"><b>Relevance unavailable</b><span>The judge model could not be reached.</span></span>
-        <button className="btn sm" onClick={onRefresh}>Retry</button>
+        <button className="btn sm" onClick={onRefresh}>Retry scoring</button>
       </div>
     ) : null;
   }

@@ -162,6 +162,33 @@ def _draw_scrim(draw, s):
         draw.line((0, y, W, y), fill=(r, g, b, a))
 
 
+FRAME_MARGIN, FRAME_RADIUS = 48, 26
+
+
+def photo_box(top_h, bottom_h):
+    """Where a framed poster's photo sits: the space between the two text bands."""
+    ph = max(160, H - top_h - bottom_h)
+    pw = min(W - 2 * FRAME_MARGIN, int(ph * 1.3))
+    left = (W - pw) // 2
+    return left, top_h, left + pw, top_h + ph
+
+
+def _framed(photo, s):
+    """Solid band colour with the photo fitted between the bands, so no text covers it.
+
+    The crop is centred slightly above the middle, where the image prompt puts
+    the product; what gets cut is the empty space the prompt leaves above and below.
+    """
+    canvas = Image.new("RGBA", (W, H), hex_to_rgba(s["color"]))
+    box = photo_box(int(s["top_h"]), int(s["bottom_h"]))
+    size = (box[2] - box[0], box[3] - box[1])
+    fitted = ImageOps.fit(photo, size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.45))
+    mask = Image.new("L", size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius=FRAME_RADIUS, fill=255)
+    canvas.paste(fitted, box[:2], mask)
+    return canvas
+
+
 def _draw_block(draw, layer, font):
     max_w = layer["width"] / 100 * W
     lines = _wrap(draw, layer["text"], font, max_w)
@@ -204,12 +231,14 @@ def _draw_cta(draw, layer, font):
 
 def render_poster(base_bytes, cfg, guides=False):
     """Compose the background image + scrim + text layers into a 1080x1080 poster."""
-    base = Image.open(io.BytesIO(base_bytes)).convert("RGB")
-    base = ImageOps.fit(base, (W, H), method=Image.Resampling.LANCZOS).convert("RGBA")
-
-    scrim_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    _draw_scrim(ImageDraw.Draw(scrim_layer), cfg["scrim"])
-    out = Image.alpha_composite(base, scrim_layer)
+    photo = Image.open(io.BytesIO(base_bytes)).convert("RGB")
+    if cfg["scrim"].get("frame"):
+        out = _framed(photo, cfg["scrim"])
+    else:
+        base = ImageOps.fit(photo, (W, H), method=Image.Resampling.LANCZOS).convert("RGBA")
+        scrim_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        _draw_scrim(ImageDraw.Draw(scrim_layer), cfg["scrim"])
+        out = Image.alpha_composite(base, scrim_layer)
 
     text_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(text_layer)
@@ -421,6 +450,24 @@ def subject_span(image):
     return max(0, int(top * scale) - margin), min(H, int((bottom + 1) * scale) + margin)
 
 
+BUSY_LIMIT = 0.1
+
+
+def busy_share(image, box, slices=8):
+    """Share of sharp left/right steps (object outlines) in the busiest slice of box.
+
+    Floors, horizons and soft light only change from top to bottom, so text
+    can sit on them; outlines mean a product or prop is there. The busiest of
+    several vertical slices counts, so a narrow product is not averaged away.
+    """
+    region = image.crop(box)
+    small = region.convert("L").resize((max(3 * slices, region.width // 3), max(1, region.height // 3)),
+                                       Image.Resampling.BOX)
+    gray = np.asarray(small, dtype=np.float32)
+    steps = np.abs(gray[:, 2:] - gray[:, :-2]) > 12
+    return float(max(part.mean() for part in np.array_split(steps, slices, axis=1)))
+
+
 def covers_text(family, weight, text):
     """True when this catalogue face has a real glyph for every character in text."""
     path, wght = typography.designed_fonts().get(typography.face_name(family, weight), (None, None))
@@ -462,79 +509,73 @@ def design_poster(base_bytes, texts, pairing):
     cta.update(color=_hex(colors["button_text"]), button_color=_hex(colors["button"]),
                radius=radius, pad=pad)
 
-    # Keep the text clear of the product: headline above it, copy below it (or
-    # under the headline when there is no room below), button at the bottom.
-    # When the product reaches the top of the frame, the headline moves into
-    # the free space below it instead of being printed over it.
-    subj_top, subj_bottom = subject_span(image) or (H // 3, 2 * H // 3)
-    gap, top_margin = 18, 44
+    # Text keeps fixed places so it never lands on the product: the headline
+    # opens the poster, the button closes it, and the copy sits just above the
+    # button or right under the headline, wherever the photo is clear. When the
+    # photo leaves no clear room, the poster is framed instead: solid bands carry
+    # the text and the photo is fitted between them.
+    gap, top_margin, band_gap = 18, 44, 28
 
     path, wght = fonts[cta["font"]]
     cta["size"], _, _ = _fit(cta["text"], path, wght, 700, 60, 1, 30, 18, 1.0)
-    cta_top = cta["y"] / 100 * H - (cta["size"] + 2 * pad * 0.6) / 2
+    left, top_off, right, bottom = load_font(path, cta["size"], wght).getbbox(cta["text"])
+    cta_w, cta_h = right - left + 3 * pad, bottom - top_off + 1.2 * pad
+    cta_top = cta["y"] / 100 * H - cta_h / 2
+    cta_box = (int(W / 2 - cta_w / 2), int(cta_top), int(W / 2 + cta_w / 2), int(cta_top + cta_h))
 
     path, wght = fonts[head["font"]]
-    fit_head = lambda room: _fit(head["text"], path, wght, head["width"] / 100 * W,
-                                 room, 3, 96, 34, head_spacing)
-    cpath, cwght = fonts[copy["font"]]
-    fit_copy = lambda room: _fit(copy["text"], cpath, cwght, copy["width"] / 100 * W,
-                                 room, 9, 34, 20, copy["line_spacing"])
-    top_free = subj_top - gap - top_margin
-    bottom_start = subj_bottom + gap
-    head["size"], lines, fits = fit_head(min(230, top_free))
-    head_top = top_margin
-    if not fits:
-        # Below the product only if the copy still fits under it (or above it).
-        low_size, low_lines, low_fits = fit_head(min(230, cta_top - gap - bottom_start))
-        low_h = low_size * head_spacing * low_lines
-        copy_room = cta_top - gap - (bottom_start + low_h + gap)
-        if low_fits and (fit_copy(copy_room)[2] or fit_copy(top_free)[2]):
-            head["size"], lines, head_top = low_size, low_lines, bottom_start
-        else:   # no clear space for it anywhere: top of the frame, outlined if needed
-            head["size"], lines, _ = fit_head(max(110, min(230, top_free)))
+    head["size"], lines, _ = _fit(head["text"], path, wght, head["width"] / 100 * W,
+                                  200, 3, 96, 34, head_spacing)
     head_h = head["size"] * head_spacing * lines
-    head["y"] = round((head_top + head_h / 2) / H * 100, 2)
-    head_below = head_top != top_margin
-    if head_below:   # headline already sits under the product; copy follows it
-        below = cta_top - gap - (head_top + head_h + gap)
-        above = top_free
+    head["y"] = round((top_margin + head_h / 2) / H * 100, 2)
+
+    cpath, cwght = fonts[copy["font"]]
+    copy["size"], lines, _ = _fit(copy["text"], cpath, cwght, copy["width"] / 100 * W,
+                                  190, 6, 32, 20, copy["line_spacing"])
+    copy_h = copy["size"] * copy["line_spacing"] * lines
+    low_top = cta_top - gap - copy_h
+    high_top = top_margin + head_h + gap
+
+    def clear(top, bottom, inset=60):
+        return busy_share(image, (inset, int(top), W - inset, int(bottom))) < BUSY_LIMIT
+
+    framed = not clear(top_margin, top_margin + head_h) or not clear(cta_box[1], cta_box[3], cta_box[0])
+    if not framed and clear(low_top, low_top + copy_h, 90):
+        copy_top = low_top
+    elif not framed and high_top + copy_h < H / 2 and clear(high_top, high_top + copy_h, 90):
+        copy_top = high_top
     else:
-        below = cta_top - gap - bottom_start
-        above = subj_top - gap - (top_margin + head_h + gap)
-    size, lines, fits = fit_copy(below)
-    if fits:
-        copy_bottom = cta_top - gap
-    else:
-        size, lines, fits = fit_copy(above)
-        if fits:
-            copy_bottom = subj_top - gap if head_below else \
-                top_margin + head_h + gap + size * copy["line_spacing"] * lines
-        else:   # no clear space anywhere: sit above the button, outlined if needed
-            size, lines, _ = fit_copy(250)
-            copy_bottom = cta_top - gap
-    copy["size"] = size
-    copy_h = size * copy["line_spacing"] * lines
-    copy_top = copy_bottom - copy_h
+        framed, copy_top = True, low_top
     copy["y"] = round((copy_top + copy_h / 2) / H * 100, 2)
 
-    # Inks were picked for the top and bottom strips; a block moved elsewhere
-    # gets the ink that reads best on what is actually behind it.
-    if head_below:
-        colors["headline"] = _ink_for(_region_color(
-            image, (60, int(head_top), W - 60, int(head_top + head_h))), colors["dominant"])
-        head.update(color=_hex(colors["headline"]), shadow=_luminance(colors["headline"]) > 0.5)
-    if copy_bottom < cta_top - gap:
-        colors["copy"] = _ink_for(_region_color(
-            image, (90, int(copy_top), W - 90, int(copy_bottom))), colors["dominant"])
-        copy.update(color=_hex(colors["copy"]), shadow=_luminance(colors["copy"]) > 0.5)
+    if framed:
+        # Band: a pale or deep tint of the photo's main colour, matching its mood.
+        dark_photo = _luminance(_region_color(image, (0, 0, W, H))) < 0.18
+        band = _mix(colors["dominant"], (0, 0, 0) if dark_photo else (255, 255, 255), 0.82 if dark_photo else 0.9)
+        ink = _ink_for(band, colors["dominant"])
+        for layer in (head, copy):
+            layer.update(color=_hex(ink), shadow=False, stroke=0)
+        button = colors["button"]
+        if _contrast(button, band) < 2.2:
+            button = _mix(ink, colors["button"], 0.25)
+        cta.update(button_color=_hex(button), color=_hex(max(
+            [(255, 255, 255), _mix(button, (0, 0, 0), 0.85)], key=lambda c: _contrast(c, button))))
+        scrim = dict(SCRIM_DEFAULTS, color=_hex(band), strength=1.0, frame=True,
+                     top_h=int(top_margin + head_h + band_gap),
+                     bottom_h=int(H - (copy_top - band_gap)))
+    else:
+        # Inks were picked for the top and bottom strips; copy moved under the
+        # headline gets the ink that reads best on what is actually behind it.
+        copy_box = (90, int(copy_top), W - 90, int(copy_top + copy_h))
+        if copy_top == high_top:
+            colors["copy"] = _ink_for(_region_color(image, copy_box), colors["dominant"])
+            copy.update(color=_hex(colors["copy"]), shadow=_luminance(colors["copy"]) > 0.5)
+        head.update(_halo(image, (60, top_margin, W - 60, int(top_margin + head_h)), colors["headline"]))
+        copy.update(_halo(image, copy_box, colors["copy"]))
+        scrim = dict(SCRIM_DEFAULTS, color=_hex(colors["band"]), frame=False)
 
-    # The default band is faint, so check what actually sits behind each block.
-    head.update(_halo(image, (60, int(head_top), W - 60, int(head_top + head_h)), colors["headline"]))
-    copy.update(_halo(image, (90, int(copy_top), W - 90, int(copy_bottom)), colors["copy"]))
-
-    scrim = dict(SCRIM_DEFAULTS, color=_hex(colors["band"]))
     return {"fonts": list(fonts), "layers": layers, "scrim": scrim,
-            "design": {"style": style, **names}}
+            "design": {"style": style, **names, "framed": framed}}
 
 
 # --------------------------------------------------------------------------
@@ -595,6 +636,7 @@ def config_from_payload(payload):
         strength=_num(s_in.get("strength"), 0.0, 1.0, sd["strength"]),
         top_h=int(_num(s_in.get("top_h"), 0, 600, sd["top_h"])),
         bottom_h=int(_num(s_in.get("bottom_h"), 0, 700, sd["bottom_h"])),
+        frame=bool(s_in.get("frame", False)),
     )
     return {"layers": layers, "scrim": scrim}
 

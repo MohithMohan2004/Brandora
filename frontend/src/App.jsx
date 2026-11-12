@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, apiUrl, getServer, isApp, setServer } from "./api.js";
 import Thumb from "./components/Thumb.jsx";
-import Icon from "./icons.jsx";
+import Icon, { Logo } from "./icons.jsx";
 import { Kbd, MOD, Popover, Segmented, Sheet, Slider, ToastProvider, relTime, useToast } from "./ui.jsx";
 import { ShellContext } from "./components/Toolbar.jsx";
 import Brief from "./components/Brief.jsx";
@@ -233,8 +233,8 @@ function Shell() {
       refreshHistory();
       const check = res.editor.image_check || {};
       toast(check.fallback
-        ? { kind: "warn", text: `The main image model was unavailable, so ${check.model.split("/").pop()} made this photo.` }
-        : { kind: "ok", text: "Photo generated and checked. Your words are typeset on top." });
+        ? { kind: "warn", text: `The main image model was unavailable, so ${check.model.split("/").pop()} made the background photo.` }
+        : { kind: "ok", text: "Poster generated. Your headline, copy and button are typeset on the background photo." });
     } catch (err) {
       toast({ kind: "error", text: err.message });
     } finally {
@@ -443,7 +443,7 @@ function Sidebar({ config, route, gen, steps, prefs, setPref, items, onNew, busy
     <aside className="sidebar material-heavy" aria-label="Navigation">
       <div className="side-top">
         <div className="brand">
-          <span className="brand-mark"><Icon name="sparkle" size={16} /></span>
+          <span className="brand-mark"><Logo size={22} /></span>
           <span className="brand-name">Brandora</span>
         </div>
         <button className="icon-btn sm side-toggle" onClick={onToggle} title={`${collapsed ? "Expand" : "Collapse"} sidebar (${MOD} B)`}
@@ -520,7 +520,7 @@ function Sidebar({ config, route, gen, steps, prefs, setPref, items, onNew, busy
       <footer className="side-foot">
         <span className={`conn ${config?.cloudflare_ready ? "on" : "off"}`}
           title={config?.cloudflare_ready ? "Cloudflare connected" : "Add Cloudflare keys to .env"}>
-          <span className="side-text">{config ? (config.cloudflare_ready ? "Connected" : "Offline images") : "Connecting…"}</span>
+          <span className="side-text">{config ? (config.cloudflare_ready ? "Connected" : "Posters unavailable") : "Connecting…"}</span>
         </span>
         <div className="side-foot-actions">
           <button className="icon-btn hide-touch" onClick={onHelp} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
@@ -566,17 +566,17 @@ function Settings({ config, prefs, setPref }) {
           <span className="field-label">Server</span>
           <div className="server-row">
             <code className="truncate">{getServer()}</code>
-            <button className="btn sm" onClick={() => { setServer(""); window.location.reload(); }}>Change</button>
+            <button className="btn sm" onClick={() => { setServer(""); window.location.reload(); }}>Change server</button>
           </div>
         </div>
       )}
       {config && (
         <dl className="models">
-          <div><dt>Writer</dt><dd title={config.chat_model}>{config.chat_model.split("/").pop()}</dd></div>
+          <div><dt>Writer model</dt><dd title={config.chat_model}>{config.chat_model.split("/").pop()}</dd></div>
           <div><dt>Retrieval</dt><dd>{config.embed_model}</dd></div>
-          <div><dt>Image</dt><dd title={config.image_model}>{config.image_model.split("/").pop()}</dd></div>
+          <div><dt>Image model</dt><dd title={config.image_model}>{config.image_model.split("/").pop()}</dd></div>
           {config.image_fallbacks?.length > 0 && (
-            <div><dt>Fallback</dt><dd>{config.image_fallbacks.map((m) => m.split("/").pop()).join(", ")}</dd></div>
+            <div><dt>Fallback image model</dt><dd>{config.image_fallbacks.map((m) => m.split("/").pop()).join(", ")}</dd></div>
           )}
           <div><dt>Cloudflare</dt><dd className={config.cloudflare_ready ? "ok-ink" : "warn-ink"}>
             {config.cloudflare_ready ? "Connected" : "Keys missing in .env"}</dd></div>

@@ -73,7 +73,7 @@ export default function Evidence({ retrieved, catalogue }) {
       <Toolbar title="Evidence" subtitle={retrieved?.length ? "What this ad was allowed to use" : "Catalogue and brand guidelines"}>
         <label className="search-field">
           <Icon name="search" size={15} />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter" aria-label="Filter records" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter records" aria-label="Filter records" />
           {query && <button className="icon-btn xs" onClick={() => setQuery("")} aria-label="Clear filter"><Icon name="x" size={12} /></button>}
         </label>
       </Toolbar>
