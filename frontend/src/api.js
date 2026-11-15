@@ -1,15 +1,17 @@
 // Thin client for the FastAPI backend (backend/app.py).
 //
 // In the browser the UI and the API share an origin, so paths stay relative.
-// Inside the Android app the UI is bundled with the APK and the API lives on the
-// computer running ./start.sh --lan, so every path is prefixed with that address.
+// Inside the Android app the UI is bundled with the APK and the API lives elsewhere:
+// the hosted server on Render by default, or a computer running ./start.sh --lan
+// if the user points the app at one. Every path is prefixed with that address.
 export const isApp = typeof window !== "undefined" && window.location.hostname === "appassets.androidplatform.net";
 
 const SERVER_KEY = "brandora.server";
+export const DEFAULT_SERVER = "https://brandora-cs8i.onrender.com";
 const readServer = () => {
   try { return localStorage.getItem(SERVER_KEY) || ""; } catch { return ""; }
 };
-let base = isApp ? readServer() : "";
+let base = isApp ? readServer() || DEFAULT_SERVER : "";
 
 export const getServer = () => base;
 export const normalizeServer = (value) => {
@@ -35,7 +37,7 @@ async function request(path, options = {}) {
   } catch (err) {
     if (err.name === "AbortError") throw err;
     throw new Error(isApp
-      ? `Can't reach the Brandora server at ${base}. Check that ./start.sh --lan is running and the phone is on the same Wi-Fi.`
+      ? `Can't reach the Brandora server at ${base}. Check your internet connection and try again.`
       : "Can't reach the Brandora server. Is ./start.sh still running?");
   }
   if (!res.ok) {
