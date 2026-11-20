@@ -511,10 +511,10 @@ def design_poster(base_bytes, texts, pairing):
 
     # Text keeps fixed places so it never lands on the product: the headline
     # opens the poster, the button closes it, and the copy sits just above the
-    # button or right under the headline, wherever the photo is clear. When the
-    # photo leaves no clear room, the poster is framed instead: solid bands carry
-    # the text and the photo is fitted between them.
-    gap, top_margin, band_gap = 18, 44, 28
+    # button or right under the headline, wherever the photo is clear. The photo
+    # always fills the poster; when it is busy behind the text the colour bands
+    # get stronger instead of framing the photo (framing stays an editor option).
+    gap, top_margin = 18, 44
 
     path, wght = fonts[cta["font"]]
     cta["size"], _, _ = _fit(cta["text"], path, wght, 700, 60, 1, 30, 18, 1.0)
@@ -539,43 +539,28 @@ def design_poster(base_bytes, texts, pairing):
     def clear(top, bottom, inset=60):
         return busy_share(image, (inset, int(top), W - inset, int(bottom))) < BUSY_LIMIT
 
-    framed = not clear(top_margin, top_margin + head_h) or not clear(cta_box[1], cta_box[3], cta_box[0])
-    if not framed and clear(low_top, low_top + copy_h, 90):
+    busy = not clear(top_margin, top_margin + head_h) or not clear(cta_box[1], cta_box[3], cta_box[0])
+    if clear(low_top, low_top + copy_h, 90):
         copy_top = low_top
-    elif not framed and high_top + copy_h < H / 2 and clear(high_top, high_top + copy_h, 90):
+    elif high_top + copy_h < H / 2 and clear(high_top, high_top + copy_h, 90):
         copy_top = high_top
     else:
-        framed, copy_top = True, low_top
+        busy, copy_top = True, low_top
     copy["y"] = round((copy_top + copy_h / 2) / H * 100, 2)
 
-    if framed:
-        # Band: a pale or deep tint of the photo's main colour, matching its mood.
-        dark_photo = _luminance(_region_color(image, (0, 0, W, H))) < 0.18
-        band = _mix(colors["dominant"], (0, 0, 0) if dark_photo else (255, 255, 255), 0.82 if dark_photo else 0.9)
-        ink = _ink_for(band, colors["dominant"])
-        for layer in (head, copy):
-            layer.update(color=_hex(ink), shadow=False, stroke=0)
-        button = colors["button"]
-        if _contrast(button, band) < 2.2:
-            button = _mix(ink, colors["button"], 0.25)
-        cta.update(button_color=_hex(button), color=_hex(max(
-            [(255, 255, 255), _mix(button, (0, 0, 0), 0.85)], key=lambda c: _contrast(c, button))))
-        scrim = dict(SCRIM_DEFAULTS, color=_hex(band), strength=1.0, frame=True,
-                     top_h=int(top_margin + head_h + band_gap),
-                     bottom_h=int(H - (copy_top - band_gap)))
-    else:
-        # Inks were picked for the top and bottom strips; copy moved under the
-        # headline gets the ink that reads best on what is actually behind it.
-        copy_box = (90, int(copy_top), W - 90, int(copy_top + copy_h))
-        if copy_top == high_top:
-            colors["copy"] = _ink_for(_region_color(image, copy_box), colors["dominant"])
-            copy.update(color=_hex(colors["copy"]), shadow=_luminance(colors["copy"]) > 0.5)
-        head.update(_halo(image, (60, top_margin, W - 60, int(top_margin + head_h)), colors["headline"]))
-        copy.update(_halo(image, copy_box, colors["copy"]))
-        scrim = dict(SCRIM_DEFAULTS, color=_hex(colors["band"]), frame=False)
+    # Inks were picked for the top and bottom strips; copy moved under the
+    # headline gets the ink that reads best on what is actually behind it.
+    copy_box = (90, int(copy_top), W - 90, int(copy_top + copy_h))
+    if copy_top == high_top:
+        colors["copy"] = _ink_for(_region_color(image, copy_box), colors["dominant"])
+        copy.update(color=_hex(colors["copy"]), shadow=_luminance(colors["copy"]) > 0.5)
+    head.update(_halo(image, (60, top_margin, W - 60, int(top_margin + head_h)), colors["headline"]))
+    copy.update(_halo(image, copy_box, colors["copy"]))
+    scrim = dict(SCRIM_DEFAULTS, color=_hex(colors["band"]), frame=False,
+                 strength=0.45 if busy else SCRIM_DEFAULTS["strength"])
 
     return {"fonts": list(fonts), "layers": layers, "scrim": scrim,
-            "design": {"style": style, **names, "framed": framed}}
+            "design": {"style": style, **names, "framed": False}}
 
 
 # --------------------------------------------------------------------------
