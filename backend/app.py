@@ -64,7 +64,7 @@ EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "embeddinggemma")
 # "cloudflare" runs the same embeddinggemma on Workers AI, for hosts with no Ollama
 # (Render). Vectors are cached per provider so the two never mix.
 EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "ollama").strip().lower()
-CLOUDFLARE_EMBED_MODEL = os.getenv("CLOUDFLARE_EMBED_MODEL", "@cf/google/embeddinggemma-300m")
+CLOUDFLARE_EMBED_MODEL = os.getenv("CLOUDFLARE_EMBED_MODEL", "@cf/baai/bge-m3")
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
 CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
 # FLUX.2 klein follows "plain, blank surfaces" far better than FLUX.1 schnell,
